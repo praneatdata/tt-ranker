@@ -87,6 +87,7 @@ Everything is one slash command, `/tt`.
 | `/tt challenge @bob best of 5` | Or type it. `bo7`, `first to 3`, `5 games`, `at 6pm` |
 | `/tt accept 4` · `/tt decline 4` | Answer a challenge — the DM buttons do the same |
 | `/tt challenges` | Every challenge still waiting on an answer |
+| `/tt shame` · `/tt shame @bob` | The wall of shame — results thrown out, challenges ducked |
 | `/tt book` · `/tt book 6` | Open fixtures · one in full, with every stake |
 | `/tt wallet` | Your spins and recent moves |
 | `/tt transfer @bob 500` | Admins only — move spins between wallets |
@@ -1228,6 +1229,38 @@ The agreed length is **a statement of intent, not a constraint**. It rides along
 onto the fixture, but `/tt log` still takes whatever was really played — a
 best-of-five that stopped at 2-0 is logged as two games. Enforcing it would mean
 rejecting true results to protect a plan, which is the wrong way round.
+
+### The wall of shame
+
+`/tt shame`. Four things go on it:
+
+| | |
+|---|---|
+| :wastebasket: **Thrown out** | results they pressed *That's wrong* on |
+| :turtle: **Ducked** | challenges they turned down |
+| :ghost: **Ghosted** | challenges they never answered at all |
+| :no_entry_sign: **Bailed** | fixtures called off, or left without a result |
+
+**Counted as it happens, never derived.** Most of these destroy the record they
+happened to — throwing a result out deletes its pending record, which is the
+point of throwing it out, and a challenge ages out of Redis within the week. So
+each bumps a counter at the moment it happens and the counter *is* the record.
+A miscount can only be undone with `shame.clear()`, since there is no history to
+replay it from.
+
+A few things deliberately don't count. Taking back **your own** logged result is
+cancelling your own typo, not refusing somebody else's. **Withdrawing** your own
+challenge isn't ducking one. And an **open call** nobody takes shames nobody —
+it was addressed to the channel, so nobody was asked and nobody ignored it.
+
+**A caveat worth keeping in view.** Throwing out a wrong scoreline is the
+integrity model working — it is the only thing standing between the ladder and
+whatever anybody feels like typing. A board that shames people for pressing
+*That's wrong* pushes them toward confirming results they believe are wrong, and
+that is a worse problem than the one the board is for. So the wall says out loud
+that it is a joke, and the honest move if it ever stops reading as one is to
+drop the *Thrown out* column — or the board — rather than to keep score more
+quietly.
 
 ### Running late
 

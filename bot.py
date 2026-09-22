@@ -38,6 +38,7 @@ import kv
 import challenge
 import parsing
 import rerate
+import shame
 import store
 
 CONFIRM_ACTION = "tt_confirm"
@@ -642,6 +643,10 @@ def handle_dispute(body, client, respond, logger=None):
         _only_you(respond, ":lock: Only the players in this match can dispute it.")
         return
     store.drop_pending(mid)
+    # Counted here because throwing a result out deletes the record it was on —
+    # there is nothing left afterwards to count from.
+    if user != record.get("logged_by"):
+        shame.record(user, "rejected")
     games_a, games_b, _, _ = elo.tally(record["games"])
     blocks = [
         _section(f":no_entry_sign: ~{scoreline(record, games_a, games_b, settled=False)}~\n"
@@ -1585,6 +1590,7 @@ QUICK = (
         ("me", "@bob", "one player's card"),
         ("history", "@bob today", "results, by player and by day"),
         ("titles", "", "who holds what"),
+        ("shame", "", "the wall of shame — thrown out, ducked, ghosted"),
         ("odds", "@bob", "who's favoured"),
         ("pending", "", "results still waiting on a confirmation"),
         ("who", "ChumChum", "a ladder name to a person, or back again"),
@@ -1804,6 +1810,8 @@ def handle_tt_command(ack, command, respond, client=None, context=None, logger=N
             handle_answer_command(command, respond, client, logger=logger)
         elif sub == "challenges":
             handle_challenges(command, respond)
+        elif sub == "shame":
+            handle_shame(command, respond)
         elif sub == "bet":
             handle_bet(command, respond, client, bot_id, logger=logger)
         elif sub == "wallet":
@@ -2312,6 +2320,7 @@ def handle_cancel_fixture(body, client, respond, logger=None):
         return
     refunded = betting.pool(sid)["total"]
     betting.void(record, f"called off by <@{user}>")
+    shame.record(user, "bailed")
     blocks = [
         _section(f":no_entry_sign: ~{fmt_side(record['side_a'])} vs "
                  f"{fmt_side(record['side_b'])}~ — called off."),
@@ -2720,6 +2729,7 @@ def answer_challenge(cid, user, verb, client, now=None, logger=None,
             fixture = challenge.accept(record, user, now=now, side_b=taking)
         elif verb == "decline":
             challenge.decline(record, user, now)
+            shame.record(user, "ducked")
         else:
             challenge.withdraw(record, user, now)
     except Exception:
@@ -2819,6 +2829,47 @@ def handle_answer_command(command, respond, client=None, logger=None):
     respond(error or {"accept": ":crossed_swords: You're on.",
                       "decline": ":wave: Turned it down.",
                       "withdraw": ":wastebasket: Taken back."}[verb])
+
+
+SHAME_SHOWN = 10
+
+
+def shame_text(rows, names=None, total=0):
+    """The wall itself. Written to be read as a joke, because that is what it
+    is — the counters are real and none of them is an accusation."""
+    if not rows:
+        return (":innocent: *Wall of shame*\n_Nothing on it. Every result "
+                "confirmed, every challenge answered. Suspicious._")
+    lines = [":wastebasket: *Wall of shame*"]
+    for i, (uid, row, points) in enumerate(rows, start=1):
+        badge = "  :skull:" if i == 1 else ""
+        bits = "  ".join(f"{shame.BY_KIND[k][2]} {row[k]}"
+                         for k, *_ in shame.KINDS if row.get(k))
+        lines.append(f"`{i:>2}.`  <@{uid}> — {bits}{badge}")
+    lines.append("\n_" + "  ·  ".join(
+        f"{shame.BY_KIND[k][2]} {shame.BY_KIND[k][0].lower()}"
+        for k, *_ in shame.KINDS) + "_")
+    lines.append(f"_{total} bit{'s' if total != 1 else ''} of friction in all. "
+                 "Throwing out a wrong score is the ladder working — this is for "
+                 "laughs, not a charge sheet._")
+    return "\n".join(lines)
+
+
+def handle_shame(command, respond):
+    """`/tt shame` — the wall. `/tt shame @bob` for one person's record."""
+    _, rest = parsing.split_subcommand(command.get("text", ""))
+    mentioned = parsing.mentions_in(rest)
+    if mentioned:
+        uid = mentioned[0]
+        row = shame.for_player(uid)
+        if not row:
+            respond(f":innocent: <@{uid}> has nothing against their name. "
+                    "Confirms everything, answers everything.")
+            return
+        respond(f":wastebasket: <@{uid}> — {shame.summary(row)}.")
+        return
+    respond(shame_text(shame.board(limit=SHAME_SHOWN), store.names(),
+                       shame.total()))
 
 
 def handle_challenges(command, respond):

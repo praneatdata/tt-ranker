@@ -63,6 +63,8 @@ SUBCOMMANDS = {
     "accept": "accept", "yes": "accept", "on": "accept",
     "decline": "decline", "nope": "decline", "no": "decline",
     "challenges": "challenges", "callouts": "challenges",
+    "shame": "shame", "wall": "shame", "hall-of-shame": "shame",
+    "naughty": "shame",
     # An open call carries no DM, so its buttons aren't anywhere — taking one
     # back has to be sayable.
     "withdraw": "withdraw", "takeback": "withdraw", "unchallenge": "withdraw",

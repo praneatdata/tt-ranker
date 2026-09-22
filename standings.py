@@ -195,6 +195,8 @@ def sweep_fixtures(client, now=None, dry_run=False, logger=None):
                 continue
             refunded = betting.pool(record["id"])["total"]
             betting.void(record, "no result was ever logged", now)
+            import shame
+            shame.record_many(record["side_a"] + record["side_b"], "bailed")
             bot._refresh_with(record, client, [
                 bot._section(f":no_entry_sign: ~{bot.fmt_side(record['side_a'])} vs "
                              f"{bot.fmt_side(record['side_b'])}~ — no result logged."),
@@ -225,6 +227,11 @@ def sweep_challenges(client, now=None, dry_run=False, logger=None):
         if not challenge.claim(record["id"]):
             continue
         challenge.expire(record, now)
+        # Whoever was asked and never answered. An open call was addressed to
+        # nobody in particular, so nobody ghosted it.
+        if not challenge.is_open_call(record):
+            import shame
+            shame.record_many(record.get("side_b", ()), "ghosted")
         bot._close_challenge(record, client, now, logger=logger)
         expired.append(record["id"])
     return {"expired": expired}
