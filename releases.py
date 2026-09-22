@@ -23,6 +23,22 @@ Release = namedtuple("Release", "date name summary changes prs")
 
 RELEASES = (
     Release(
+        "2026-09-22", "Winning pays, and a wall of shame",
+        "Spins for taking a session, and a board for everyone who wouldn't play.",
+        (
+            "Win a session and the spins follow: 5 for a close one, 10 for a "
+            "decent win, 20 for a wipeout. Scaled by games — 2-1 is close, 2-0 "
+            "decent, 3-0 a wipeout. A draw pays nobody.",
+            "Both of a winning pair are paid in full, not half each.",
+            "`/tt shame` — results thrown out, challenges ducked, challenges "
+            "ghosted, fixtures bailed on. It's a joke, and it says so.",
+            "Taking back your own logged result doesn't count against you, and "
+            "an open call nobody takes shames nobody — it was addressed to the "
+            "channel, so nobody was asked.",
+        ),
+        (),
+    ),
+    Release(
         "2026-09-22", "Winning never costs you",
         "Win the session and your rating can't go down. Lose it and it can't go up.",
         (
