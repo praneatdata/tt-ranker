@@ -46,6 +46,16 @@ START_SPINS = 5000
 WEEKLY_STIPEND = 1000
 MIN_BET = 5
 
+# Winning a session pays, scaled to how convincing it was — by games, because
+# that is what "close" and "wipeout" mean to the person who played it.
+#
+# **This mints.** Until now the weekly stipend was the only thing that created
+# spins, and everything else was strictly zero-sum; a prize is new money by
+# definition. It stays small on purpose: a whole week of matches pays out a
+# small fraction of one week's stipend, so the pool grows slowly enough that a
+# wallet still means what it did. If that stops being true, this is the dial.
+WIN_PRIZE = ((3, 20, "wipeout"), (2, 10, "decent"), (1, 5, "close"))
+
 WALLET_KEY = "tt:wallet"
 LIVE_KEY = "tt:sched:live"
 SEQ_KEY = "tt:sched:seq"
@@ -188,6 +198,60 @@ def transfer(sender, recipient, amount, by=None, now=None):
     adjust(recipient, amount, f"from <@{sender}>{hand}", now)
     return True, (f"Moved *{amount:,} {CURRENCY}* from <@{sender}> to "
                   f"<@{recipient}>.")
+
+
+# --- winning pays -----------------------------------------------------------
+
+def prize_for(games_a, games_b):
+    """(spins, what it reads as) for the winning side. (0, "") for a draw.
+
+    A pure function of the scoreline, which is what lets an undo reverse it
+    exactly without anything having been written down at the time.
+    """
+    margin = abs(int(games_a) - int(games_b))
+    if not margin:
+        return 0, ""
+    for least, amount, label in WIN_PRIZE:
+        if margin >= least:
+            return amount, label
+    return 0, ""
+
+
+def winners_of(blob):
+    """The side that took the session, or [] if nobody did."""
+    ga, gb = blob.get("games_a", 0), blob.get("games_b", 0)
+    if ga == gb:
+        return []
+    return list(blob["side_a"] if ga > gb else blob["side_b"])
+
+
+def pay_prize(blob, now=None):
+    """Credit the winners. Returns {uid: spins}, empty on a draw.
+
+    Each winner is paid in full rather than the pair splitting one prize: it is
+    a prize for winning, and halving it for doubles would make the sensible move
+    "play singles for the money".
+    """
+    amount, label = prize_for(blob.get("games_a", 0), blob.get("games_b", 0))
+    winners = winners_of(blob)
+    if not (amount and winners):
+        return {}
+    ensure_wallets(winners)
+    for uid in winners:
+        adjust(uid, amount, f"won a match ({label})", now)
+    return {uid: amount for uid in winners}
+
+
+def take_back_prize(blob, now=None):
+    """Reverse what pay_prize gave, for an undone match. Recomputed from the
+    scoreline rather than read back, so the two can never disagree."""
+    amount, label = prize_for(blob.get("games_a", 0), blob.get("games_b", 0))
+    winners = winners_of(blob)
+    if not (amount and winners):
+        return {}
+    for uid in winners:
+        adjust(uid, -amount, f"match undone ({label})", now)
+    return {uid: -amount for uid in winners}
 
 
 def pay_stipend(week=None, now=None):

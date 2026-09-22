@@ -393,8 +393,10 @@ def test_several_fixtures_settling_in_any_order_conserve_the_supply(fake):
     assert supply() == opening
 
 
-def test_the_stipend_is_the_only_thing_that_mints(fake, stipend_on):
-    """Every other path is zero-sum; new spins come from exactly one place."""
+def test_the_stipend_and_the_win_prize_are_the_only_things_that_mint(fake, stipend_on):
+    """It used to be the stipend alone. Winning a match now pays too, so there
+    are exactly two sources of new spins and everything else — every bet, every
+    settlement, every transfer — is still strictly zero-sum."""
     store.ensure_players(EVERYONE)
     betting.ensure_wallets(EVERYONE)
     opening = supply()
@@ -413,7 +415,8 @@ def test_a_transfer_moves_spins_between_wallets(fake):
 
 
 def test_a_transfer_mints_nothing(fake):
-    """The Monday stipend stays the only thing in the system that creates spins."""
+    """Moving spins between wallets creates none: a debit and a credit of the
+    same size. Only the stipend and the win prize make new ones."""
     betting.ensure_wallets(EVERYONE)
     before = supply()
     betting.transfer(A, B, 1234)
@@ -532,3 +535,74 @@ def test_the_total_agrees_with_the_table_under_it(fake):
     kv.hset(betting.WALLET_KEY, A, 4000)     # only A has a real wallet
     ranked = betting.standings(store.player_ids())
     assert sum(held for _, held, _ in ranked) == betting.circulating(store.player_ids())
+
+
+# --- winning pays ----------------------------------------------------------
+
+@pytest.mark.parametrize("games_a,games_b,spins,label", [
+    (2, 1, 5, "close"), (3, 2, 5, "close"), (1, 0, 5, "close"),
+    (2, 0, 10, "decent"), (4, 2, 10, "decent"),
+    (3, 0, 20, "wipeout"), (4, 1, 20, "wipeout"), (5, 0, 20, "wipeout"),
+    (0, 2, 10, "decent"),          # read from the winning side, either side
+])
+def test_what_a_win_is_worth(games_a, games_b, spins, label):
+    assert betting.prize_for(games_a, games_b) == (spins, label)
+
+
+def test_a_drawn_session_pays_nobody():
+    assert betting.prize_for(2, 2) == (0, "")
+
+
+def blob(side_a, side_b, games_a, games_b):
+    return {"id": "1", "side_a": list(side_a), "side_b": list(side_b),
+            "games_a": games_a, "games_b": games_b}
+
+
+def test_the_winner_is_paid_and_the_loser_is_not(fake):
+    betting.ensure_wallets([A, B])
+    paid = betting.pay_prize(blob([A], [B], 3, 0))
+    assert paid == {A: 20}
+    assert betting.balance(A) == betting.START_SPINS + 20
+    assert betting.balance(B) == betting.START_SPINS
+
+
+def test_both_of_a_winning_pair_are_paid_in_full(fake):
+    """Not half each: halving it for doubles would make the sensible move
+    'play singles for the money'."""
+    betting.ensure_wallets([A, B, C, D])
+    assert betting.pay_prize(blob([A, B], [C, D], 2, 1)) == {A: 5, B: 5}
+
+
+def test_a_draw_pays_nobody_through_the_real_path(fake):
+    betting.ensure_wallets([A, B])
+    assert betting.pay_prize(blob([A], [B], 2, 2)) == {}
+    assert betting.balance(A) == betting.START_SPINS
+
+
+def test_the_prize_shows_up_in_the_ledger_with_a_reason(fake):
+    betting.ensure_wallets([A, B])
+    betting.pay_prize(blob([A], [B], 3, 0))
+    assert "wipeout" in betting.ledger(A)[0]["reason"]
+
+
+def test_undoing_a_match_takes_the_prize_back(fake):
+    betting.ensure_wallets([A, B])
+    b = blob([A], [B], 3, 0)
+    betting.pay_prize(b)
+    betting.take_back_prize(b)
+    assert betting.balance(A) == betting.START_SPINS
+
+
+def test_the_prize_is_a_pure_function_of_the_scoreline(fake):
+    """Which is what lets an undo reverse it exactly without anything having
+    been written down when it was paid."""
+    b = blob([A], [B], 4, 1)
+    assert betting.prize_for(b["games_a"], b["games_b"]) == \
+        betting.prize_for(b["games_a"], b["games_b"])
+
+
+def test_a_week_of_matches_mints_far_less_than_one_stipend(fake, stipend_on):
+    """The prize is new money. It stays small enough that a wallet still means
+    what it did — if that stops being true, WIN_PRIZE is the dial."""
+    a_week_of_wipeouts = 85 * 20 * 1.5        # every match a 3-0, some doubles
+    assert a_week_of_wipeouts < betting.WEEKLY_STIPEND * 43 * 0.1

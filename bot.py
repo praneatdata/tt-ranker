@@ -247,6 +247,12 @@ def applied_blocks(blob):
         how = f"confirmed by <@{blob['confirmed_by']}>"
     else:
         how = "confirmed"
+    amount, label = betting.prize_for(blob["games_a"], blob["games_b"])
+    winners = betting.winners_of(blob)
+    if amount and winners:
+        lines.append(f"\n:coin: *{fmt_spins(amount)}* each to {fmt_side(winners)}"
+                     f" — _{label} win_")
+
     tail = f"Match `#{blob['id']}` · {how}"
     if blob.get("doubles"):
         tail += " · doubles"
@@ -418,7 +424,7 @@ def _record_as_admin(record, admin, channel, client, bot_id=None, logger=None):
         store.drop_pending(record["id"])
         (logger or log).exception("admin apply of %s failed", record["id"])
         return ":x: Something went wrong rating that session — try again in a moment."
-    _settle_bets(blob, client, logger=logger)
+    _pay_out(blob, client, logger=logger)
     try:
         client.chat_postMessage(channel=channel, blocks=applied_blocks(blob),
                                 text=f"Session recorded by <@{admin}>.")
@@ -628,7 +634,7 @@ def handle_confirm(body, client, respond, logger=None):
         return
     _settle_everywhere(client, blob, applied_blocks(blob), "Session confirmed.",
                        body=body, respond=respond, logger=logger)
-    _settle_bets(blob, client, logger=logger)
+    _pay_out(blob, client, logger=logger)
     _note_if_ephemeral(body, respond, f":white_check_mark: Settled `#{mid}`.")
 
 
@@ -1411,6 +1417,12 @@ def handle_undo(command, respond):
         respond(f":warning: {reason}")
         return
     store.undo_match(blob)
+    # The prize goes back with the rating — it was paid for a result that is
+    # now being unsaid. Recomputed from the scoreline, so it reverses exactly.
+    try:
+        betting.take_back_prize(blob)
+    except Exception:
+        log.exception("taking back the prize for %s failed", blob.get("id"))
     restored = "  ".join(f"<@{u}> back to *{blob['before'][u]}*"
                          for u in blob["side_a"] + blob["side_b"])
     respond(f":leftwards_arrow_with_hook: Undid match `#{blob['id']}` "
@@ -3062,6 +3074,29 @@ def _refresh_with(record, client, blocks, text, logger=None):
                            blocks=blocks, text=text)
     except Exception as e:
         (logger or log).warning("fixture %s update failed: %s", record["id"], e)
+
+
+def _pay_out(blob, client, logger=None):
+    """Everything money-shaped that follows a rated session: the prize for
+    winning it, and settling any fixture it decided.
+
+    One call so the three routes into apply_match — a confirmation, an admin
+    logging their own, and the sweep applying one nobody answered — cannot drift
+    on which of them pays out.
+    """
+    _pay_win_prize(blob, logger=logger)
+    return _settle_bets(blob, client, logger=logger)
+
+
+def _pay_win_prize(blob, logger=None):
+    """Winning a session pays spins. Never risks the result: the rating is
+    already written, and a wallet problem must not surface as an error next to a
+    match that was recorded fine."""
+    try:
+        return betting.pay_prize(blob)
+    except Exception:
+        (logger or log).exception("paying the win prize for %s failed", blob.get("id"))
+        return {}
 
 
 def _settle_bets(blob, client, logger=None):

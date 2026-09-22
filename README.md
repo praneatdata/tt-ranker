@@ -1262,6 +1262,35 @@ that it is a joke, and the honest move if it ever stops reading as one is to
 drop the *Thrown out* column — or the board — rather than to keep score more
 quietly.
 
+### Winning pays
+
+Take a session and the spins follow, scaled to how convincing it was — by
+**games**, because that's what *close* and *wipeout* mean to whoever played it:
+
+| Won by | | Pays |
+|---|---|---|
+| 1 game | 2–1, 3–2, 1–0 | **5 spins** |
+| 2 games | 2–0, 4–2 | **10 spins** |
+| 3 or more | 3–0, 4–1 | **20 spins** |
+
+A drawn session pays nobody. **Both of a winning pair are paid in full** rather
+than splitting one prize — halving it for doubles would make the sensible move
+"play singles for the money". The result message says what it paid.
+
+It's paid on every route a match can be rated by — a confirmation, an admin
+logging their own, and the sweep applying one nobody answered — because all
+three go through one payout. `/tt undo` takes it back with the rating; the prize
+is a pure function of the scoreline, so it reverses exactly without anything
+having been written down when it was paid. A `recompute` deliberately doesn't
+touch it: replaying ratings is not a reason to reach into wallets.
+
+**This mints, and that's new.** The weekly stipend used to be the only thing
+that created spins; there are now two, and everything else — every bet, every
+settlement, every transfer — is still strictly zero-sum. The prize is small on
+purpose: a whole week of matches, every one of them a 3–0, pays out under a
+tenth of one week's stipend. `WIN_PRIZE` in [betting.py](betting.py) is the dial
+if the pool ever starts outrunning what a wallet is supposed to mean.
+
 ### Running late
 
 `/tt reschedule 6 7pm`, or press **Move it** on the fixture. The players,

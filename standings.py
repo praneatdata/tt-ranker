@@ -164,7 +164,7 @@ def sweep_pending(client, now=None, dry_run=False, logger=None):
             continue
         applied.append(blob["id"])
         _update_original(client, blob, logger=logger)
-        bot._settle_bets(blob, client, logger=logger)
+        bot._pay_out(blob, client, logger=logger)
     return {"status": "dry_run" if dry_run else "swept",
             "applied": applied, "still_waiting": skipped}
 

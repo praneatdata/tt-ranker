@@ -2041,3 +2041,62 @@ def test_a_mistyped_command_is_answered_with_a_guess(fake, client):
 def test_help_is_still_the_whole_thing(fake, client):
     out = said(run("help", client))
     assert "How the rating works" in out
+
+
+# --- winning a session pays spins ------------------------------------------
+
+def test_confirming_a_match_pays_the_winner(fake):
+    import betting
+    from unittest.mock import MagicMock
+    store.ensure_players([A, B])
+    betting.ensure_wallets([A, B])
+    record = store.create_pending([A], [B], [(21, 10), (21, 12), (21, 15)],
+                                  logged_by=A)
+    bot.handle_confirm({"user": {"id": B},
+                        "actions": [{"action_id": bot.CONFIRM_ACTION,
+                                     "value": record["id"]}]},
+                       MagicMock(), MagicMock())
+    assert betting.balance(A) == betting.START_SPINS + 20     # 3-0, a wipeout
+    assert betting.balance(B) == betting.START_SPINS
+
+
+def test_an_auto_confirmed_match_pays_too(fake):
+    """The sweep goes through the same payout as a confirmation, so a match
+    nobody answered still pays whoever won it."""
+    import betting, standings
+    from datetime import timedelta
+    from unittest.mock import MagicMock
+    now = store.now_ist()
+    store.ensure_players([A, B])
+    betting.ensure_wallets([A, B])
+    store.create_pending([A], [B], [(21, 10), (21, 12)], logged_by=A,
+                         now=now - timedelta(hours=store.AUTO_CONFIRM_HOURS + 1))
+    standings.sweep_pending(MagicMock(), now=now)
+    assert betting.balance(A) == betting.START_SPINS + 10     # 2-0, decent
+
+
+def test_undoing_a_match_takes_the_spins_back_with_the_rating(fake):
+    import betting
+    from unittest.mock import MagicMock
+    store.ensure_players([A, B])
+    betting.ensure_wallets([A, B])
+    record = store.create_pending([A], [B], [(21, 10), (21, 12), (21, 15)],
+                                  logged_by=A)
+    bot.handle_confirm({"user": {"id": B},
+                        "actions": [{"action_id": bot.CONFIRM_ACTION,
+                                     "value": record["id"]}]},
+                       MagicMock(), MagicMock())
+    respond = MagicMock()
+    bot.handle_undo({"user_id": A, "text": "undo"}, respond)
+    assert betting.balance(A) == betting.START_SPINS
+
+
+def test_the_result_message_says_what_winning_paid(fake):
+    store.ensure_players([A, B])
+    record = store.create_pending([A], [B], [(21, 10), (21, 12), (21, 15)],
+                                  logged_by=A)
+    store.claim_pending(record["id"])
+    blob = store.apply_match(record, confirmed_by=B)
+    text = " ".join(b["text"]["text"] for b in bot.applied_blocks(blob)
+                    if b["type"] == "section")
+    assert "20" in text and "wipeout" in text
