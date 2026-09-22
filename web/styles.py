@@ -475,6 +475,38 @@ MOTION = """
 """
 
 PAGES = """
+/* The wall of shame. Built from the same parts as the ladder's rungs — a rank,
+   a name, some figures — because it is read the same way, and giving it a look
+   of its own would make it feel like a different kind of claim than it is.
+   The one borrowed colour is the down tone on the worst row, which the board
+   already uses for a rating going the wrong way. */
+.shame{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;
+  gap:var(--s2)}
+.shame-row{display:grid;grid-template-columns:auto auto 1fr auto;align-items:center;
+  gap:var(--s3);padding:var(--s3) var(--s4);background:var(--surface);
+  border:1px solid var(--line);border-radius:var(--r)}
+.shame-row.is-worst{border-color:var(--down-line);background:var(--down-bg)}
+.shame-row .rank{color:var(--muted);font-size:.875rem;font-variant-numeric:tabular-nums}
+.shame-row .who{display:flex;align-items:center;gap:var(--s2);min-width:0}
+.shame-name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.shame-tallies{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;
+  gap:var(--s2) var(--s3);justify-content:flex-end}
+.shame-tally{display:flex;align-items:baseline;gap:.35rem;font-size:.8125rem}
+.shame-tally .n{font-weight:700;font-variant-numeric:tabular-nums}
+.shame-tally .k{color:var(--muted)}
+.shame-score{font-weight:700;font-size:1.125rem;font-variant-numeric:tabular-nums;
+  min-width:2.5ch;text-align:right}
+.shame-key{padding:var(--s4);background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r)}
+.shame-key-head{margin:0 0 var(--s3);font-weight:600;font-size:.875rem}
+.shame-key ul{list-style:none;margin:0;padding:0;display:flex;
+  flex-direction:column;gap:var(--s2)}
+.shame-key-item{display:grid;grid-template-columns:8rem 1fr auto;gap:var(--s3);
+  align-items:baseline;font-size:.875rem}
+.shame-key-item .k{font-weight:600}
+.shame-key-item .d{color:var(--muted)}
+.shame-key-item .w{color:var(--muted);font-variant-numeric:tabular-nums}
+
 /* Secondary pages: the ladder's hero at working size. */
 .page-head{padding:var(--s12) 0 var(--s8)}
 .page-head h1{margin:var(--s2) 0 0;font-size:clamp(2.25rem,8vw,3.5rem);
@@ -796,6 +828,13 @@ body.is-busy .loading{opacity:1;animation:load 1.4s cubic-bezier(.2,.7,.3,1) for
 """
 
 RESPONSIVE = """
+@media (max-width:640px){
+  .shame-row{grid-template-columns:auto 1fr auto;row-gap:var(--s2)}
+  .shame-tallies{grid-column:1/-1;justify-content:flex-start}
+  .shame-key-item{grid-template-columns:1fr auto}
+  .shame-key-item .d{grid-column:1/-1}
+}
+
 @media (min-width:48rem){
   .wrap{padding-inline:var(--s6)}
   .page-head{padding:var(--s16) 0 var(--s8)}

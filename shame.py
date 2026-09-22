@@ -22,7 +22,7 @@ SHAME_KEY = "tt:shame"
 # Ordered worst-first, which is also the order the board reads in.
 KINDS = (
     ("rejected", "Thrown out",
-     "Results they pressed *That's wrong* on", ":wastebasket:"),
+     "Results they pressed “That’s wrong” on", ":wastebasket:"),
     ("ducked", "Ducked",
      "Challenges they turned down", ":turtle:"),
     ("ghosted", "Ghosted",

@@ -547,3 +547,69 @@ def test_a_link_keeps_the_reader_on_the_format_they_were_reading():
     people = {A: player(rating=1100, matches=4, games_won=12, games_lost=4)}
     html = page_ladder.render(people, NAMES, [], {}, {}, 1, view="doubles")
     assert f'href="/player/{A}?view=doubles"' in html
+
+
+# --- the wall of shame -----------------------------------------------------
+
+# Built by hand rather than through shame.record(), so these stay what the rest
+# of this file is: page rendering with no database anywhere near it.
+def a_wall(*rows):
+    import shame
+    return [(uid, row, shame.score(row)) for uid, row in rows]
+
+
+def test_the_shame_page_lists_the_worst_first():
+    from web.pages import shame as page
+    html = page.render(a_wall((B, {"rejected": 3}), (A, {"ducked": 1})),
+                       {A: "Ada", B: "Bo"})
+    assert html.index("Bo") < html.index("Ada")
+
+
+def test_the_shame_page_says_it_is_a_joke():
+    """Rejecting a wrong score is the ladder working. If the page ever stops
+    saying so, the column goes rather than the wording."""
+    from web.pages import shame as page
+    html = page.render(a_wall((A, {"rejected": 1})), {A: "Ada"})
+    assert "joke board" in html and "keeping the results honest" in html
+
+
+def test_an_empty_wall_says_what_is_missing_rather_than_no_data():
+    from web.pages import shame as page
+    html = page.render([], {})
+    assert "Nothing on it" in html and "no data" not in html.lower()
+
+
+def test_every_name_on_the_wall_is_a_link_to_that_player():
+    from web.pages import shame as page
+    html = page.render(a_wall((A, {"ducked": 1})), {A: "Ada"})
+    assert f'href="/player/{A}"' in html
+
+
+def test_the_shame_page_explains_what_each_column_costs():
+    """The weighted total is the thing people will query, so the key spells out
+    what each kind is worth rather than leaving it to be reverse-engineered."""
+    import shame
+    from web.pages import shame as page
+    html = page.render([], {})
+    key = html[html.index("shame-key"):]
+    for kind, name, blurb, _ in shame.KINDS:
+        assert name in key, name
+        assert blurb.split()[0] in key, blurb
+        assert f'class="w num">{shame.WEIGHTS[kind]}<' in key, kind
+
+
+def test_the_wall_is_in_the_nav():
+    from web import layout
+    assert ("Shame", "/shame", True) in layout.NAV_ITEMS
+
+
+def test_the_shame_page_makes_no_external_request():
+    from web.pages import shame as page
+    html = page.render(a_wall((A, {"ducked": 1})), {A: "Ada"})
+    assert "http://" not in html and "https://" not in html
+
+
+def test_a_name_nobody_has_set_still_renders():
+    from web.pages import shame as page
+    html = page.render(a_wall((A, {"bailed": 1})), {})
+    assert A[-4:] in html

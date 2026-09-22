@@ -1232,7 +1232,9 @@ rejecting true results to protect a plan, which is the wrong way round.
 
 ### The wall of shame
 
-`/tt shame`. Four things go on it:
+`/tt shame` in Slack, or **/shame** on the site — it's in the nav next to
+Titles, which is its opposite: that page is what there is to win here besides a
+number, this is what there is to lose. Four things go on it:
 
 | | |
 |---|---|

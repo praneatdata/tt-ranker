@@ -30,8 +30,9 @@ RELEASES = (
             "decent win, 20 for a wipeout. Scaled by games — 2-1 is close, 2-0 "
             "decent, 3-0 a wipeout. A draw pays nobody.",
             "Both of a winning pair are paid in full, not half each.",
-            "`/tt shame` — results thrown out, challenges ducked, challenges "
-            "ghosted, fixtures bailed on. It's a joke, and it says so.",
+            "`/tt shame`, or the new Shame tab on the site — results thrown "
+            "out, challenges ducked, challenges ghosted, fixtures bailed on. "
+            "It's a joke, and it says so.",
             "Taking back your own logged result doesn't count against you, and "
             "an open call nobody takes shames nobody — it was addressed to the "
             "channel, so nobody was asked.",
