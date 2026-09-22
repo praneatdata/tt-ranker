@@ -63,6 +63,9 @@ SUBCOMMANDS = {
     "accept": "accept", "yes": "accept", "on": "accept",
     "decline": "decline", "nope": "decline", "no": "decline",
     "challenges": "challenges", "callouts": "challenges",
+    # An open call carries no DM, so its buttons aren't anywhere — taking one
+    # back has to be sayable.
+    "withdraw": "withdraw", "takeback": "withdraw", "unchallenge": "withdraw",
     "wallet": "wallet", "balance": "wallet", "spins": "wallet", "purse": "wallet",
     "rich": "rich", "richest": "rich", "wallets": "rich", "moneyboard": "rich",
     "titles": "titles", "title": "titles", "badges": "titles", "awards": "titles",
@@ -602,12 +605,100 @@ def parse_length(text):
     return None, None, ""
 
 
-def parse_challenge(text, caller=None, bot_id=None, now=None, default_games=3):
-    """`@bob best of 5 at 6pm` → (side_a, side_b, games, first_to, when|None).
+# --- open challenges --------------------------------------------------------
 
-    The time is optional here in a way it isn't for `/tt schedule`: a challenge
-    is an invitation, and "play me some time today" is a real thing to say. Left
-    out, it is None and the fixture takes its start from whenever it's accepted.
+# "anyone around my level" — what an open call means when nobody says otherwise.
+DEFAULT_BAND = 100
+# Wide enough to be a real range and no wider: a band of 900 is not a band.
+MAX_BAND = 400
+
+# `1100-1250` absolute, or `+150` / `-150` / `±100` relative to the caller.
+# Matched before anything is tokenised, because a hyphenated pair of numbers is
+# a scoreline to every other part of this module.
+_BAND_ABS = re.compile(r"\b(\d{3,4})\s*(?:-|–|to)\s*(\d{3,4})\b")
+_BAND_REL = re.compile(r"(?<![\w-])(\+-|±|\+|-)\s*(\d{1,4})(?![\d-])")
+_OPEN_WORD = re.compile(r"(?i)(?:^|\s)(open|anyone)(?=\s|$)")
+
+
+def split_open(text):
+    """(is it an open call, the rest of the text) — `open` or `anyone`, wherever
+    it sits, pulled out so nothing downstream reads it as a name."""
+    text = text or ""
+    if not _OPEN_WORD.search(text):
+        return False, text.strip()
+    return True, _OPEN_WORD.sub(" ", text).strip()
+
+
+def parse_band(text, rating=None):
+    """((low, high), matched text) — the rating range an open call is aimed at.
+
+    Absolute (`1100-1250`) or relative to whoever is asking (`+150` means up to
+    150 above me, `±100` either way). Nothing given and it is (None, "") — the
+    caller decides what no band means, because that depends on knowing their
+    rating.
+    """
+    m = _BAND_ABS.search(text or "")
+    if m:
+        low, high = sorted((int(m.group(1)), int(m.group(2))))
+        _check_band(low, high)
+        return (low, high), m.group(0)
+    m = _BAND_REL.search(text or "")
+    if m:
+        if rating is None:
+            raise ParseError("I need to know your rating to read a range like "
+                             f"`{m.group(0).strip()}` — play a game first, or "
+                             "give it as `1100-1250`.")
+        sign, size = m.group(1), int(m.group(2))
+        rating = int(rating)
+        if sign in ("+-", "±"):
+            low, high = rating - size, rating + size
+        elif sign == "+":
+            low, high = rating, rating + size
+        else:
+            low, high = rating - size, rating
+        _check_band(max(low, 0), high)
+        return (max(low, 0), high), m.group(0)
+    return None, ""
+
+
+def _check_band(low, high):
+    if high - low > MAX_BAND:
+        raise ParseError(f"That range is {high - low} points wide — wider than "
+                         f"{MAX_BAND} is everyone. Try something like "
+                         "`±100`.")
+
+
+def parse_open_challenge(text, caller=None, bot_id=None, now=None,
+                         default_games=3, rating=None):
+    """`open ±100 best of 5 at 6pm` → (side_a, (low, high), games, first_to, when).
+
+    `side_a` is whoever is asking, plus a partner if they named one — their half
+    of a doubles match is theirs to settle. The other side is whoever takes it.
+    """
+    band, band_text = parse_band(text, rating)
+    rest = text.replace(band_text, " ") if band_text else text
+    rest, games, first_to, when = _length_and_time(rest, now, default_games)
+
+    # Every mention here is on *my* side. That is the whole difference: a
+    # directed challenge reads one name as the opponent, and an open call has no
+    # opponent to read — whoever takes it brings their own.
+    named = [uid for uid in mentions_in(rest, exclude=bot_id) if uid != caller]
+    side_a = ([caller] if caller else []) + named
+    if len(side_a) > 2:
+        raise ParseError("A side is one player or two. Name one partner at "
+                         "most — whoever takes it brings their own.")
+    if band is None:
+        if rating is None:
+            raise ParseError("Say who it's for — `/tt challenge open 1100-1250` "
+                             "— or play a game first so I can read `±100`.")
+        band = (max(int(rating) - DEFAULT_BAND, 0), int(rating) + DEFAULT_BAND)
+    return side_a, band, games, first_to, when
+
+
+def _length_and_time(text, now, default_games):
+    """(rest of the text, games, first_to, when|None) — the two halves of a
+    challenge that aren't the players. Shared with parse_open_challenge, so a
+    directed call and an open one can't disagree about what `bo5 at 6pm` means.
     """
     import elo
     games, first_to, length_text = parse_length(text)
@@ -619,11 +710,6 @@ def parse_challenge(text, caller=None, bot_id=None, now=None, default_games=3):
     # `at` is only ever glue between the two, and would read as a name otherwise.
     rest = re.sub(r"(?i)\bat\b", " ", rest)
 
-    side_a, side_b = _sides(_tokenize(rest, exclude=bot_id), caller)
-    validate_sides(side_a, side_b)
-    if caller and caller in side_b:
-        raise ParseError("You can't challenge yourself.")
-
     if games is None:
         games, first_to = default_games, default_games // 2 + 1
     if games < 1:
@@ -631,11 +717,25 @@ def parse_challenge(text, caller=None, bot_id=None, now=None, default_games=3):
     if games > elo.MAX_GAMES:
         raise ParseError(f"{games} games is more than the {elo.MAX_GAMES} a "
                          "session can hold. Try `best of 5`.")
-
     if when is not None:
         if when <= now:
             raise ParseError("That's already past. Try `in 30m`, `6pm`, or `18:30`.")
         if when - now > timedelta(days=MAX_LEAD_DAYS):
             raise ParseError(f"That's more than {MAX_LEAD_DAYS} days out — "
                              "challenge them nearer the time.")
+    return rest, games, first_to, when
+
+
+def parse_challenge(text, caller=None, bot_id=None, now=None, default_games=3):
+    """`@bob best of 5 at 6pm` → (side_a, side_b, games, first_to, when|None).
+
+    The time is optional here in a way it isn't for `/tt schedule`: a challenge
+    is an invitation, and "play me some time today" is a real thing to say. Left
+    out, it is None and the fixture takes its start from whenever it's accepted.
+    """
+    rest, games, first_to, when = _length_and_time(text, now, default_games)
+    side_a, side_b = _sides(_tokenize(rest, exclude=bot_id), caller)
+    validate_sides(side_a, side_b)
+    if caller and caller in side_b:
+        raise ParseError("You can't challenge yourself.")
     return side_a, side_b, games, first_to, when

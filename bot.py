@@ -1648,6 +1648,32 @@ HELP_HEAD = f""":table_tennis_paddle_and_ball: *TT Ranker* — the office table 
 
 Scores are the points in each game — log as many games as you played, there's \
 no fixed length. The other side confirms it, then ratings move. Unconfirmed \
+results apply on their own after {store.AUTO_CONFIRM_HOURS}h.
+
+*Everything else*
+• `/tt board` — the ladder    • `/tt board singles` / `doubles` — one format
+• `/tt me [@player]` — one player's card
+• `/tt history [@player] [today|yesterday|week|date]` — results, filtered
+• `/tt pending` — awaiting confirmation
+• `/tt odds @bob` — who's favoured    • `/tt undo` — revert the last match you logged
+• `/tt register` — join early    • `/tt sync` — add everyone in this channel
+• `/tt name Your Name` — how you appear on the web ladder
+• `/tt who ChumChum` — who is that? · `/tt who @someone` — what are they called?\n• `/tt intro` — post the how-it-works message, for pinning
+• `/tt wallet` — your spins    • `/tt rich` — the spins leaderboard
+• `/tt titles` — who holds what
+• `/tt reschedule 6 7pm` — running late? move a fixture and keep every stake \
+_(or press *Move it* on it)_
+• `/tt challenge` — opens a form. Or type it: `/tt challenge @bob best of 5` \
+— also `bo7`, `first to 3`, `5 games`, and `at 6pm` if you want a time. \
+They accept, it goes up as a fixture.
+• `/tt challenge open ±100 bo5` — call out anyone near your level; first to \
+take it gets the fixture. Name your own partner for doubles and they bring theirs.
+• `/tt accept 4` · `/tt decline 4` · `/tt withdraw 4` · `/tt challenges` \
+— answer one, take yours back, or see what's open
+• `/tt edit 33 21-19 …` — correct a logged match _(admins; `swap` if the sides \
+went in backwards, `void` to throw it out)_
+
+*How the rating works*
 results apply on their own after {store.AUTO_CONFIRM_HOURS}h."""
 
 
@@ -1783,6 +1809,8 @@ def handle_tt_command(ack, command, respond, client=None, context=None, logger=N
             handle_wallet(command, respond)
         elif sub == "rich":
             handle_rich(respond)
+        elif sub == "withdraw":
+            handle_answer_command(command, respond, client, logger=logger)
         elif sub == "titles":
             handle_titles(respond)
         elif sub == "book":
@@ -2300,9 +2328,16 @@ def challenge_line(record, now=None, players=None):
     if players is None:
         players = store.get_players(record["side_a"] + record["side_b"])
     a = fmt_side_rated(record["side_a"], players)
-    b = fmt_side_rated(record["side_b"], players)
     when = challenge.starts_at(record)
     at = f" · {fmt_when({'starts_at': store.stamp(when)}, now)}" if when else ""
+    if challenge.is_open_call(record):
+        # No opponent to name and no favourite to work out, so the band does the
+        # job the other side's rating does on a directed challenge.
+        return (f":crossed_swords: {a}\n"
+                f"*is calling anyone out*\n"
+                f"_{challenge.band_note(record)}"
+                f" · {challenge.length_note(record)}{at}_")
+    b = fmt_side_rated(record["side_b"], players)
     return (f":crossed_swords: {a}\n"
             f"*challenges*\n"
             f"{b}\n"
@@ -2312,10 +2347,15 @@ def challenge_line(record, now=None, players=None):
 def challenge_blocks(record, now=None):
     """What the channel sees. Read-only, like a pending result: the buttons go
     to the people who get to answer, not to everyone who can see the post."""
-    who = fmt_side(record["side_b"])
+    open_call = challenge.is_open_call(record)
+    who = "whoever takes it" if open_call else fmt_side(record["side_b"])
     state = record.get("state")
     if state == "open":
-        tail = (f"Waiting on {who}. Expires in {challenge.EXPIRE_HOURS}h "
+        tail = ((f"Open to {challenge.band_note(record)}"
+                 + (", in pairs" if challenge.side_size(record) > 1 else "")
+                 + f". Expires in {challenge.EXPIRE_HOURS}h if nobody takes it.")
+                if open_call else
+                f"Waiting on {who}. Expires in {challenge.EXPIRE_HOURS}h "
                 "if nobody answers.")
     elif state == "accepted":
         tail = f"Accepted by <@{record['answered_by']}> — fixture `#{record['fixture']}` is up."
@@ -2327,10 +2367,21 @@ def challenge_blocks(record, now=None):
         tail = f"Nobody answered in {challenge.EXPIRE_HOURS}h."
     players = store.get_players(record["side_a"] + record["side_b"])
     blocks = [_section(challenge_line(record, now, players))]
-    if state == "open":
+    if state == "open" and not open_call:
         blocks.append(_context(favourite_line(record["side_a"], record["side_b"],
                                               players)))
     blocks.append(_context(f"Challenge `#{record['id']}` · {tail}"))
+    # An open call has no named audience to DM, so the one button that matters
+    # goes in the channel where the people who could answer it are.
+    if state == "open" and open_call:
+        if challenge.side_size(record) > 1:
+            blocks.append(_context(
+                f"_Bring a partner: `/tt accept {record['id']} @them`._"))
+        else:
+            blocks.append({
+                "type": "actions", "block_id": f"tt_chal_{record['id']}",
+                "elements": [_button(ACCEPT_ACTION, "⚔️  I'll take it",
+                                     record["id"], style="primary")]})
     return blocks
 
 
@@ -2471,6 +2522,11 @@ def handle_challenge(command, respond, client=None, bot_id=None, logger=None):
     caller = command["user_id"]
     _, rest = parsing.split_subcommand(command.get("text", ""))
     now = store.now_ist()
+    is_open, rest = parsing.split_open(rest)
+    if is_open:
+        handle_open_challenge(rest, caller, command.get("channel_id", ""),
+                              respond, client, now, logger, bot_id)
+        return
     if not rest.strip():
         try:
             client.views_open(
@@ -2502,8 +2558,65 @@ def handle_challenge(command, respond, client=None, bot_id=None, logger=None):
         respond(error)
 
 
+def band_rating(uids, doubles):
+    """The rating an open call's band is tested against.
+
+    The format's own: a doubles call is about how you play in pairs, and the
+    doubles board is the one that knows. For a pair it is the mean, which is
+    what elo.team_rating() already treats a team as being worth.
+    """
+    players = store.load_for_match(list(uids))
+    view = store.doubles_view if doubles else store.singles_view
+    ratings = [view(players[uid])["rating"] for uid in uids]
+    return int(round(sum(ratings) / len(ratings))) if ratings else elo.START_RATING
+
+
+def handle_open_challenge(rest, caller, channel, respond, client, now,
+                          logger=None, bot_id=None):
+    """`/tt challenge open ±100 best of 5` — an invitation to the channel.
+
+    Nobody is named, so there is nobody to DM and nothing to work out a
+    favourite from. What stands in for the opponent is a rating band, tested
+    against whoever presses rather than promised to anyone in particular.
+    """
+    store.ensure_players([caller], now)
+    mine = store.get_player(caller) or store.new_player(now)
+    standing = challenge.open_call_by(caller)
+    if standing:
+        respond(":information_source: You already have one out — "
+                f"`#{standing['id']}`, {challenge.band_note(standing)}. "
+                f"`/tt withdraw {standing['id']}` to replace it.")
+        return
+    try:
+        side_a, band, games, first_to, when = parsing.parse_open_challenge(
+            rest, caller=caller, bot_id=bot_id, now=now,
+            default_games=challenge.DEFAULT_GAMES,
+            rating=band_rating([caller], doubles=False))
+    except parsing.ParseError as e:
+        respond(f":warning: {e}")
+        return
+    if len(side_a) > 1:
+        # A doubles call is tested on the doubles board, so re-read a relative
+        # band against that rating rather than the singles one.
+        try:
+            side_a, band, games, first_to, when = parsing.parse_open_challenge(
+                rest, caller=caller, bot_id=bot_id, now=now,
+                default_games=challenge.DEFAULT_GAMES,
+                rating=band_rating(side_a, doubles=True))
+        except parsing.ParseError as e:
+            respond(f":warning: {e}")
+            return
+    error = open_challenge(side_a, [], games, first_to, when, caller, channel,
+                           client, now, logger, bot_id=bot_id, band=band)
+    if error:
+        respond(error)
+    elif elo.games_played(mine) < PLACEMENT_GAMES:
+        respond(":information_source: Put it up. Your rating is still settling, "
+                "so the range around it is a rough guide for now.")
+
+
 def open_challenge(side_a, side_b, games, first_to, when, caller, channel,
-                   client, now=None, logger=None, bot_id=None):
+                   client, now=None, logger=None, bot_id=None, band=None):
     """Create a challenge, post it, and DM the buttons. Returns None, or a
     message for the caller.
 
@@ -2513,7 +2626,7 @@ def open_challenge(side_a, side_b, games, first_to, when, caller, channel,
     now = now or store.now_ist()
     store.ensure_players(side_a + side_b, now)
     record = challenge.issue(side_a, side_b, games, by=caller, first_to=first_to,
-                             starts_at=when, channel=channel, now=now)
+                             starts_at=when, channel=channel, now=now, band=band)
     try:
         resp = client.chat_postMessage(
             channel=channel, blocks=challenge_blocks(record, now),
@@ -2526,6 +2639,11 @@ def open_challenge(side_a, side_b, games, first_to, when, caller, channel,
         challenge.withdraw(record, caller, now)
         (logger or log).warning("could not post challenge: %s", e)
         return post_failure(e, channel, bot_id)
+
+    # An open call has nobody to DM buttons to — the button is in the channel,
+    # which is where the people who could answer it are.
+    if challenge.is_open_call(record):
+        return None
 
     delivered = 0
     for uid, role in challenge_audience(record).items():
@@ -2554,11 +2672,16 @@ def _close_challenge(record, client, now=None, logger=None):
                                     record["id"], e)
 
 
-def answer_challenge(cid, user, verb, client, now=None, logger=None):
+def answer_challenge(cid, user, verb, client, now=None, logger=None,
+                     partner=None):
     """Accept, decline or withdraw. Returns a message for the caller, or None.
 
-    The claim is the SREM, so two people on the challenged side pressing Accept
-    at the same moment cannot both put a fixture up for the same match.
+    The claim is the SREM, so two people pressing Accept at the same moment
+    cannot both put a fixture up for the same match. On an open call that is the
+    whole channel rather than one named person, which is exactly when it earns
+    its keep.
+
+    `partner` is who the accepter is bringing, on an open doubles call.
     """
     now = now or store.now_ist()
     record = challenge.get(cid)
@@ -2569,15 +2692,23 @@ def answer_challenge(cid, user, verb, client, now=None, logger=None):
     allowed = (challenge.may_withdraw(record, user) if verb == "withdraw"
                else challenge.may_answer(record, user))
     if not allowed:
-        return (":lock: Only whoever threw it down can take it back."
-                if verb == "withdraw" else
-                f":lock: Only {fmt_side(record['side_b'])} can answer that one.")
+        if verb == "withdraw":
+            return ":lock: Only whoever threw it down can take it back."
+        if challenge.is_open_call(record):
+            return ":person_shrugging: That's your own challenge — somebody else has to take it."
+        return f":lock: Only {fmt_side(record['side_b'])} can answer that one."
+
+    taking = None
+    if verb == "accept" and challenge.is_open_call(record):
+        taking, refusal = open_call_side(record, user, partner)
+        if refusal:
+            return refusal
     if not challenge.claim(cid):
         return ":information_source: Someone just answered that one."
 
     try:
         if verb == "accept":
-            fixture = challenge.accept(record, user, now=now)
+            fixture = challenge.accept(record, user, now=now, side_b=taking)
         elif verb == "decline":
             challenge.decline(record, user, now)
         else:
@@ -2605,6 +2736,37 @@ def answer_challenge(cid, user, verb, client, now=None, logger=None):
     return None
 
 
+def open_call_side(record, user, partner=None):
+    """(the accepting side, a refusal) for an open call — one or the other.
+
+    Checked before the claim, so a refusal leaves the challenge open for
+    somebody who does qualify rather than burning it.
+    """
+    want = challenge.side_size(record)
+    side = [user] + ([partner] if partner and partner != user else [])
+    if len(side) != want:
+        if want > 1:
+            return None, (":busts_in_silhouette: That one's doubles — bring "
+                          f"someone: `/tt accept {record['id']} @partner`.")
+        return None, (":bust_in_silhouette: That one's singles, so it's just "
+                      f"you: `/tt accept {record['id']}`.")
+    clash = set(side) & set(record.get("side_a", ()))
+    if clash:
+        return None, (":person_shrugging: "
+                      f"{fmt_side(sorted(clash))} is already in that one.")
+    doubles = want > 1
+    rating = band_rating(side, doubles)
+    if not challenge.admits(record, rating):
+        band = challenge.band_of(record)
+        whose = "you're" if want == 1 else "you two are"
+        return None, (f":no_entry_sign: That one's for {challenge.band_note(record)}"
+                      f" — {whose} {rating}."
+                      + ("" if want == 1 else
+                         " A pair is taken at the average of the two.")
+                      + f" Bands run {band[0]}–{band[1]}.")
+    return side, None
+
+
 def handle_challenge_button(body, client, respond, logger=None):
     verb = {ACCEPT_ACTION: "accept", DECLINE_ACTION: "decline",
             WITHDRAW_ACTION: "withdraw"}[_action_id(body)]
@@ -2622,22 +2784,32 @@ def handle_challenge_button(body, client, respond, logger=None):
 def handle_answer_command(command, respond, client=None, logger=None):
     """`/tt accept 4` · `/tt decline 4` — for when the DM never arrived."""
     sub, rest = parsing.split_subcommand(command.get("text", ""))
-    verb = {"accept": "accept", "decline": "decline"}[sub]
+    verb = {"accept": "accept", "decline": "decline",
+            "withdraw": "withdraw"}[sub]
+    partner = next(iter(parsing.mentions_in(rest)), None)
+    if partner:
+        rest = parsing.MENTION_RE.sub(" ", rest)
     cid = rest.strip().lstrip("#")
     if not cid.isdigit():
+        user = command["user_id"]
         mine = [r for r in challenge.live()
-                if challenge.may_answer(r, command["user_id"])]
+                if (challenge.may_withdraw(r, user) if verb == "withdraw"
+                    else challenge.may_answer(r, user))]
         if not mine:
-            respond(":grey_question: No open challenges waiting on you.")
+            respond(":grey_question: No challenges of yours to take back."
+                    if verb == "withdraw" else
+                    ":grey_question: No open challenges waiting on you.")
             return
         lines = [f"`#{r['id']}`  {fmt_side(r['side_a'])} — "
                  f"{challenge.length_note(r)}" for r in mine]
         respond(f":crossed_swords: *Which one?*  `/tt {verb} {mine[0]['id']}`\n"
                 + "\n".join(lines))
         return
-    error = answer_challenge(cid, command["user_id"], verb, client, logger=logger)
-    respond(error or (":crossed_swords: You're on." if verb == "accept"
-                      else ":wave: Turned it down."))
+    error = answer_challenge(cid, command["user_id"], verb, client,
+                             logger=logger, partner=partner)
+    respond(error or {"accept": ":crossed_swords: You're on.",
+                      "decline": ":wave: Turned it down.",
+                      "withdraw": ":wastebasket: Taken back."}[verb])
 
 
 def handle_challenges(command, respond):
@@ -2650,10 +2822,17 @@ def handle_challenges(command, respond):
         return
     lines = [":crossed_swords: *Open challenges*"]
     for r in records:
-        lines.append(f"`#{r['id']}`  {fmt_side(r['side_a'])} vs "
-                     f"{fmt_side(r['side_b'])} — {challenge.length_note(r)}"
+        facing = ("*anyone*" if challenge.is_open_call(r)
+                  else fmt_side(r["side_b"]))
+        waiting = (f"_{challenge.band_note(r)}"
+                   + (", in pairs" if challenge.side_size(r) > 1 else "")
+                   + f" · `/tt accept {r['id']}`_"
+                   if challenge.is_open_call(r)
+                   else f"_waiting on {fmt_side(r['side_b'])}_")
+        lines.append(f"`#{r['id']}`  {fmt_side(r['side_a'])} vs {facing} — "
+                     f"{challenge.length_note(r)}"
                      + (f" · {fmt_when(r, now)}" if challenge.starts_at(r) else "")
-                     + f"  _waiting on {fmt_side(r['side_b'])}_")
+                     + f"  {waiting}")
     respond("\n".join(lines))
 
 

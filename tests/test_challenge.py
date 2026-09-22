@@ -579,3 +579,297 @@ def test_the_challenges_list_shows_what_is_open(fake):
     bot.handle_challenges(command("challenges"), respond)
     out = said(respond)
     assert f"#{record['id']}" in out and "Best of 5" in out
+
+
+# --- open calls: a band instead of a name ----------------------------------
+
+NOW = None      # parse_open_challenge only needs one when a time is given
+
+
+def rated(uid, rating, games=8):
+    """A player sitting at a known rating on both boards, past placement."""
+    player = store.new_player()
+    player.update({"rating": rating, "games_won": games, "games_lost": 0,
+                   "matches": games, "peak": rating})
+    for prefix in (store.SINGLES, store.DOUBLES):
+        player[prefix + "rating"] = rating
+        player[prefix + "games_won"] = games
+        player[prefix + "games_lost"] = 0
+        player[prefix + "matches"] = games
+        player[prefix + "peak"] = rating
+    store.kv.pipeline([["HSET", store.player_key(uid)] + store._flatten(player)])
+    store.kv.sadd(store.PLAYERS_KEY, uid)
+    return player
+
+
+def open_call(side_a=(A,), band=(900, 1100), games=3, first_to=2, when=None):
+    return challenge.issue(list(side_a), [], games, by=side_a[0],
+                           first_to=first_to, starts_at=when, channel="C1",
+                           band=band)
+
+
+def test_the_word_open_is_what_picks_the_other_route():
+    assert parsing.split_open("open ±100 bo5") == (True, "±100 bo5")
+    assert parsing.split_open("anyone 900-1100") == (True, "900-1100")
+    assert parsing.split_open(f"<@{B}> bo5") == (False, f"<@{B}> bo5")
+
+
+@pytest.mark.parametrize("text,band", [
+    ("900-1100", (900, 1100)),
+    ("1100 to 1250", (1100, 1250)),
+    ("1250-1100", (1100, 1250)),        # either way round
+    ("+150", (1200, 1350)),
+    ("-150", (1050, 1200)),
+    ("±100", (1100, 1300)),
+    ("+-100", (1100, 1300)),
+])
+def test_the_ways_to_say_a_range(text, band):
+    assert parsing.parse_band(text, rating=1200)[0] == band
+
+
+def test_a_range_wider_than_everyone_is_not_a_range():
+    with pytest.raises(parsing.ParseError):
+        parsing.parse_band("200-1400", rating=1200)
+
+
+def test_a_relative_range_needs_to_know_your_rating():
+    """Rather than quietly treating an unrated player as 1000 and calling it
+    their level."""
+    with pytest.raises(parsing.ParseError):
+        parsing.parse_band("±100", rating=None)
+
+
+def test_no_range_given_is_the_band_around_you():
+    side_a, band, _, _, _ = parsing.parse_open_challenge(
+        "", caller=A, rating=1200, now=store.now_ist())
+    assert band == (1200 - parsing.DEFAULT_BAND, 1200 + parsing.DEFAULT_BAND)
+    assert side_a == [A]
+
+
+def test_a_mention_on_an_open_call_is_your_own_partner():
+    """The whole difference from a directed challenge: there is no opponent to
+    read, so whoever you name is on your side and the taker brings their own."""
+    side_a, _, _, _, _ = parsing.parse_open_challenge(
+        f"<@{B}> ±100", caller=A, rating=1200, now=store.now_ist())
+    assert side_a == [A, B]
+
+
+def test_three_on_a_side_is_not_a_side():
+    with pytest.raises(parsing.ParseError):
+        parsing.parse_open_challenge(f"<@{B}> <@{C}> ±100", caller=A,
+                                     rating=1200, now=store.now_ist())
+
+
+def test_the_length_reads_the_same_as_on_a_directed_challenge():
+    _, _, games, first_to, _ = parsing.parse_open_challenge(
+        "bo7 900-1100", caller=A, now=store.now_ist())
+    assert (games, first_to) == (7, 4)
+
+
+# --- who may take one ------------------------------------------------------
+
+def test_anyone_outside_it_may_answer_an_open_call(fake):
+    record = open_call()
+    assert challenge.may_answer(record, B)
+    assert challenge.may_answer(record, C)
+
+
+def test_you_cannot_take_your_own_call(fake):
+    """That is `/tt schedule`, which already exists."""
+    record = open_call(side_a=(A, B))
+    assert not challenge.may_answer(record, A)
+    assert not challenge.may_answer(record, B)      # nor the partner named in it
+
+
+def test_the_band_admits_its_ends(fake):
+    record = open_call(band=(900, 1100))
+    assert challenge.admits(record, 900) and challenge.admits(record, 1100)
+    assert not challenge.admits(record, 899)
+    assert not challenge.admits(record, 1101)
+
+
+def test_a_directed_challenge_has_no_band_and_admits_whoever_it_named(fake):
+    assert challenge.admits(issue(), 5000)
+    assert challenge.band_of(issue()) is None
+    assert not challenge.is_open_call(issue())
+
+
+def test_one_standing_offer_each(fake):
+    """Five identical callouts from one player is a spammed channel, not five
+    chances of a game."""
+    record = open_call()
+    assert challenge.open_call_by(A)["id"] == record["id"]
+    assert challenge.open_call_by(B) is None
+
+
+# --- through the command ---------------------------------------------------
+
+def test_an_open_call_goes_up_with_a_button_anyone_can_press(fake, client=None):
+    client = MagicMock()
+    client.chat_postMessage.return_value = {"ts": "1", "channel": "C1"}
+    rated(A, 1000)
+    respond = MagicMock()
+    bot.handle_challenge(command("challenge open 900-1100 bo5"), respond, client)
+    record = challenge.live()[0]
+    assert record["side_b"] == [] and record["band"] == [900, 1100]
+
+    blocks = bot.challenge_blocks(record)
+    posted = said(MagicMock(call_args_list=[]))          # blocks checked directly
+    head = blocks[0]["text"]["text"]
+    assert "calling anyone out" in head and "900–1100" in head
+    actions = [b for b in blocks if b.get("type") == "actions"]
+    assert actions, "an open call needs a button in the channel"
+    # Nobody was DM'd: there is no named audience to send buttons to.
+    assert client.chat_postMessage.call_count == 1
+
+
+def test_a_taker_inside_the_band_gets_the_fixture(fake):
+    client = MagicMock()
+    client.chat_postMessage.return_value = {"ts": "1", "channel": "C1"}
+    rated(A, 1000)
+    rated(B, 1050)
+    record = open_call(band=(900, 1100))
+    assert bot.answer_challenge(record["id"], B, "accept", client) is None
+    settled = challenge.get(record["id"])
+    assert settled["state"] == "accepted" and settled["side_b"] == [B]
+    assert betting.get(settled["fixture"])
+
+
+def test_a_taker_outside_the_band_is_told_the_numbers(fake):
+    client = MagicMock()
+    rated(A, 1000)
+    rated(B, 1400)
+    record = open_call(band=(900, 1100))
+    said_back = bot.answer_challenge(record["id"], B, "accept", client)
+    assert "900–1100" in said_back and "1400" in said_back
+
+
+def test_a_refusal_leaves_the_call_open_for_somebody_else(fake):
+    """Checked before the claim, so a wrong presser doesn't burn the challenge."""
+    client = MagicMock()
+    client.chat_postMessage.return_value = {"ts": "1", "channel": "C1"}
+    rated(A, 1000)
+    rated(B, 1400)
+    rated(C, 1000)
+    record = open_call(band=(900, 1100))
+    bot.answer_challenge(record["id"], B, "accept", client)
+    assert challenge.get(record["id"])["state"] == "open"
+    assert bot.answer_challenge(record["id"], C, "accept", client) is None
+    assert challenge.get(record["id"])["state"] == "accepted"
+
+
+def test_only_the_first_taker_gets_it(fake):
+    """Two people pressing at once is the case the claim exists for, and an open
+    call is the first time the race has been a real one."""
+    client = MagicMock()
+    client.chat_postMessage.return_value = {"ts": "1", "channel": "C1"}
+    for uid in (A, B, C):
+        rated(uid, 1000)
+    record = open_call(band=(900, 1100))
+    assert bot.answer_challenge(record["id"], B, "accept", client) is None
+    second = bot.answer_challenge(record["id"], C, "accept", client)
+    assert "already" in second
+    assert challenge.get(record["id"])["side_b"] == [B]
+
+
+# --- doubles ---------------------------------------------------------------
+
+def test_a_doubles_call_needs_a_pair_to_answer_it(fake):
+    client = MagicMock()
+    for uid in (A, B, C, D):
+        rated(uid, 1000)
+    record = open_call(side_a=(A, B), band=(900, 1100))
+    assert challenge.side_size(record) == 2
+    alone = bot.answer_challenge(record["id"], C, "accept", client)
+    assert "bring someone" in alone
+    assert challenge.get(record["id"])["state"] == "open"
+
+
+def test_a_pair_takes_it_and_both_go_on_the_fixture(fake):
+    client = MagicMock()
+    client.chat_postMessage.return_value = {"ts": "1", "channel": "C1"}
+    for uid in (A, B, C, D):
+        rated(uid, 1000)
+    record = open_call(side_a=(A, B), band=(900, 1100))
+    assert bot.answer_challenge(record["id"], C, "accept", client,
+                                partner=D) is None
+    settled = challenge.get(record["id"])
+    assert sorted(settled["side_b"]) == sorted([C, D])
+    fixture = betting.get(settled["fixture"])
+    assert sorted(fixture["side_b"]) == sorted([C, D])
+
+
+def test_a_pair_is_judged_on_the_average_of_the_two(fake):
+    """So a 1400 cannot take a 900-1100 call by bringing a 1000 along — the two
+    of them average 1200, which is not what the call asked for."""
+    client = MagicMock()
+    rated(A, 1000)
+    rated(B, 1000)
+    rated(C, 1400)
+    rated(D, 1000)
+    record = open_call(side_a=(A, B), band=(900, 1100))
+    refused = bot.answer_challenge(record["id"], C, "accept", client,
+                                   partner=D)
+    assert "1100" in refused and "average" in refused
+
+
+def test_a_pair_averaging_onto_the_edge_is_admitted(fake):
+    """1400 and 800 average to exactly 1100, and the band's ends are in it."""
+    client = MagicMock()
+    client.chat_postMessage.return_value = {"ts": "1", "channel": "C1"}
+    rated(A, 1000)
+    rated(B, 1000)
+    rated(C, 1400)
+    rated(D, 800)
+    record = open_call(side_a=(A, B), band=(900, 1100))
+    assert bot.answer_challenge(record["id"], C, "accept", client,
+                                partner=D) is None
+
+
+def test_a_partner_already_in_the_call_is_refused(fake):
+    client = MagicMock()
+    for uid in (A, B, C):
+        rated(uid, 1000)
+    record = open_call(side_a=(A, B), band=(900, 1100))
+    refused = bot.answer_challenge(record["id"], C, "accept", client, partner=B)
+    assert "already in that one" in refused
+
+
+def test_a_singles_call_is_just_you(fake):
+    client = MagicMock()
+    for uid in (A, B, C):
+        rated(uid, 1000)
+    record = open_call(band=(900, 1100))
+    refused = bot.answer_challenge(record["id"], B, "accept", client, partner=C)
+    assert "just you" in refused
+
+
+# --- taking one back -------------------------------------------------------
+
+def test_an_open_call_can_be_taken_back(fake):
+    """It carries no DM, so its buttons are nowhere — without a command there
+    would be no way to withdraw one at all."""
+    client = MagicMock()
+    client.chat_postMessage.return_value = {"ts": "1", "channel": "C1"}
+    rated(A, 1000)
+    record = open_call()
+    respond = MagicMock()
+    bot.handle_answer_command({"user_id": A, "text": f"withdraw {record['id']}"},
+                              respond, client)
+    assert challenge.get(record["id"])["state"] == "withdrawn"
+
+
+def test_somebody_elses_call_is_not_yours_to_take_back(fake):
+    client = MagicMock()
+    record = open_call()
+    refused = bot.answer_challenge(record["id"], C, "withdraw", client)
+    assert "threw it down" in refused
+    assert challenge.get(record["id"])["state"] == "open"
+
+
+def test_the_outstanding_list_says_what_an_open_call_is_open_to(fake):
+    open_call(band=(900, 1100))
+    respond = MagicMock()
+    bot.handle_challenges({"user_id": A, "text": "challenges"}, respond)
+    printed = respond.call_args[0][0]
+    assert "anyone" in printed and "900–1100" in printed

@@ -256,6 +256,42 @@ a subset of all games, so the same bar would leave them empty while the overall
 one is full — `SINGLES_PLACEMENT_GAMES` and `DOUBLES_PLACEMENT_GAMES` in
 [bot.py](bot.py), to raise once volume catches up.
 
+### Calling anyone out
+
+A challenge normally names somebody. An **open** one doesn't — it names a rating
+range, and the first person inside it who takes it gets the fixture:
+
+```
+/tt challenge open ±100 best of 5      anyone near my level
+/tt challenge open 1100-1250 bo7       an explicit range
+/tt challenge open +150 at 6pm         anyone up to 150 above me
+/tt challenge open @ann ±100           doubles: Ann and I want a pair
+```
+
+No range given means ±100 of you. A range wider than 400 points is refused —
+that isn't a range, that's everyone.
+
+**Doubles: each side brings its own pair.** You name your teammate when you post
+it, because that half of the match is yours to settle; whoever takes it names
+theirs on the way in with `/tt accept 7 @dan`. Two named on one side means two on
+the other, and the pair is judged on the **average** of the two ratings — so a
+1400 can't take a 900–1100 call by bringing a 1000 along.
+
+The range is tested **when somebody presses**, not when the call went up: people
+drift, and the honest question is whether they're a fair match now. It's tested
+against the format's own rating, so a doubles call is judged on the doubles
+board. Failing it leaves the call open for somebody who doesn't — a wrong presser
+never burns it.
+
+One standing offer each. Five identical callouts from one person is a spammed
+channel, not five chances of a game; `/tt withdraw 7` clears yours. An open call
+carries no DM — its button is in the channel, where the people who could answer
+it are — so `/tt withdraw` is the only way to take one back, which is why it now
+exists.
+
+Accepted, it becomes an ordinary fixture: betting, `/tt reschedule` and calling
+it off all work on it exactly as they already did.
+
 ### Joining
 
 **Anyone who joins `TT_CHANNEL` is put on the ladder automatically** and gets a

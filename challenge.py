@@ -80,11 +80,17 @@ def chal_key(cid):
 
 
 def issue(side_a, side_b, games, by, first_to=None, starts_at=None,
-          channel="", now=None):
-    """Open a challenge. `games` is the agreed session length."""
+          channel="", now=None, band=None):
+    """Open a challenge. `games` is the agreed session length.
+
+    `band` is (low, high) on an **open** call — one with no `side_b`, which
+    anyone rated inside the band may take. The band is stored rather than
+    recomputed, because it is a promise made to the channel when it was posted.
+    """
     record = {
         "id": str(kv.incr(SEQ_KEY)),
         "side_a": list(side_a), "side_b": list(side_b),
+        "band": [int(band[0]), int(band[1])] if band else [],
         "games": int(games),
         "first_to": int(first_to) if first_to else None,
         "starts_at": store.stamp(starts_at) if starts_at else "",
@@ -155,14 +161,20 @@ def expire(record, now=None):
     return _finish(record, "expired", "", now)
 
 
-def accept(record, by, channel="", now=None):
+def accept(record, by, channel="", now=None, side_b=None):
     """Say yes, and turn it into an ordinary fixture.
+
+    `side_b` fills in the far side of an open call — whoever took it, and their
+    partner if it was a doubles one. It is written onto the record as well as
+    into the fixture, so the settled challenge says who actually answered it.
 
     The fixture is the only thing that exists afterwards: betting, moving it and
     calling it off are all the machinery that already handles a scheduled match,
     so a challenge never becomes a second kind of match to keep in step.
     """
     now = now or store.now_ist()
+    if side_b:
+        record["side_b"] = list(side_b)
     lead = timedelta(minutes=parsing.DEFAULT_LEAD_MINUTES)
     when = starts_at(record) or (now + lead)
     if when <= now:
@@ -212,15 +224,75 @@ def sides_of(record):
     return list(record.get("side_a", ())), list(record.get("side_b", ()))
 
 
+def is_open_call(record):
+    """An invitation to the channel rather than to a person: nobody on the far
+    side yet, and a rating band in place of a name."""
+    return not record.get("side_b")
+
+
+def band_of(record):
+    """(low, high), or None when it is aimed at named players."""
+    band = record.get("band") or []
+    return (int(band[0]), int(band[1])) if len(band) == 2 else None
+
+
+def side_size(record):
+    """How many the taker has to bring. One or two, matching whoever asked —
+    you cannot answer a doubles call on your own."""
+    return max(1, len(record.get("side_a", ())))
+
+
+def admits(record, rating):
+    """Whether a rating is inside the band. No band admits everyone.
+
+    Checked when somebody presses, not when the call went up: people drift, and
+    the honest question is whether they are a fair match *now*.
+    """
+    band = band_of(record)
+    if not band:
+        return True
+    return band[0] <= rating <= band[1]
+
+
+def band_note(record):
+    """How the band reads on the post. One phrase, so the channel message, the
+    list and the refusal all say the same thing."""
+    band = band_of(record)
+    if not band:
+        return ""
+    return f"anyone rated {band[0]}–{band[1]}"
+
+
 def may_answer(record, uid):
-    """Only the people being challenged. The challenger cannot accept their own
-    challenge — that is just `/tt schedule`, which they already have."""
+    """Who is allowed to say yes.
+
+    On a directed challenge, only the people being challenged. On an open call,
+    anyone who isn't already in it — the challenger cannot take their own
+    invitation, which is just `/tt schedule`, and neither can the partner they
+    named. The rating band is a separate question (`admits`), because failing it
+    deserves a different answer than not being invited.
+    """
+    if is_open_call(record):
+        return uid not in set(record.get("side_a", ()))
     return uid in set(record.get("side_b", ()))
 
 
 def may_withdraw(record, uid):
     """Whoever threw it down, or anyone on their side."""
     return uid in set(record.get("side_a", ())) or uid == record.get("from")
+
+
+def open_call_by(uid):
+    """This player's open challenge, if they have one out.
+
+    `open_between` keys on the pair, and an open call has no pair — so the
+    equivalent guard is one standing offer per person. Five identical callouts
+    from the same player is a spammed channel, not five chances of a game.
+    """
+    for record in live():
+        if is_open_call(record) and uid in set(record.get("side_a", ())):
+            return record
+    return None
 
 
 def open_between(side_a, side_b):
