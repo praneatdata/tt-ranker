@@ -20,9 +20,11 @@ Each game contributes:
          blowout says less than an underdog's.
 
 Losses in a session cancel wins, so the whole thing reduces to "how much better
-did you do than expected". Winning narrowly against someone far below you can
-still cost rating — you were expected to win by more, and that is the model
-working rather than a bug.
+did you do than expected". Winning narrowly against someone far below you is
+worth nothing — you were expected to win by more — but it is never worth less
+than nothing: **winning a session never costs rating, and losing one never pays.**
+Where the margins point the other way from the result, the session is scored as
+a draw and nobody moves. See rate_match().
 
 K is not a constant. A newcomer's 1000 is a guess, so their first games are
 rated hard and the weight eases off smoothly as they play — a player brings
@@ -97,9 +99,26 @@ REFERENCE_GAME = 11
 # game-to-11 equivalent before the curve sees them, so the same curve serves
 # 11s, 21s and first-to-7 without three sets of constants.
 MIN_GAME = 7  # floor on the divisor, so a freak 2-0 can't read as a whitewash
-# Above 1, the curve spreads out: a whitewash moves ~2.9x a deuce-fest instead of
-# ~2x. This is the knob for "how much should the scoreline matter".
-MOV_GAIN = 1.5
+# How much the scoreline matters. Above 1 the curve spreads out; the further
+# above, the more a margin swamps the result it is supposed to be adjusting.
+#
+# It was 1.5, and that was too steep to survive contact with real scorelines. At
+# 1.5 an ordinary 21-18 came out at 0.45 — the floor — which is also exactly what
+# a 25-23 deuce got, so a comfortable win and a squeaker were the same evidence,
+# while a 10-21 loss was worth 1.29, nearly three times either of them.
+#
+# Match #77 is what found it: the underdogs won two games of three, were expected
+# to win 46% of them, and lost rating anyway. On the results alone that session
+# was worth +0.61; the margin curve turned it into -0.10. A margin should adjust
+# a result, not overturn it.
+#
+# At 1.0 an ordinary win sits clear of the floor again (21-18 → 0.59, distinct
+# from a 25-23 at 0.45), a whitewash is still worth about three times a squeaker,
+# and a heavy loss is worth twice an ordinary win rather than three times. Note
+# that raising MOV_MIN would have been the wrong fix: a higher floor drags *more*
+# games onto it, and the test that a 21-19 counts for less than an 11-9 is what
+# caught that.
+MOV_GAIN = 1.0
 MOV_MIN, MOV_MAX = 0.45, 1.75
 
 # A favourite is expected to win by a lot, so a big win tells us less about them
@@ -323,6 +342,20 @@ def rate_match(side_a, side_b, games, doubles_factor=None):
     weights = session_weights(rating_a, rating_b, games)
     weight_a = sum(weights)
     decided = games_a + games_b
+
+    # **Winning a session never costs you rating.** The margin maths can still
+    # say it should — win two games narrowly, lose one by a mile, and the sum
+    # comes out negative even though you took the session. That is defensible
+    # arithmetic and an indefensible thing to show somebody who just won, and it
+    # is the single complaint the ladder has actually produced (match #77).
+    #
+    # So the session is scored as a draw instead: nobody moves. Not "the winner
+    # is floored at zero and the loser keeps their gain" — that would hand the
+    # losing side rating minted out of nothing, and the ladder conserves. The
+    # honest reading of a session whose scorelines point the other way from its
+    # result is that it settled nothing.
+    if (games_a - games_b) * weight_a < 0:
+        weight_a = 0.0
 
     # One stake for the match, so what one side gains the other side loses. See
     # match_k() for why it cannot be per player and still balance.

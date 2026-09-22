@@ -328,6 +328,33 @@ everyone in it.
 
 Everyone starts at **1000**.
 
+### Winning never costs you
+
+**Win the session and your rating never goes down. Lose it and it never goes
+up.** Where the scorelines point the other way from the result, the session is
+scored as a draw and nobody moves.
+
+This rule exists because the arithmetic could say otherwise. Win two games
+narrowly, lose one by a mile, and the margins summed to less than nothing even
+though you took the session — which is defensible maths and an indefensible
+thing to show somebody who just won. Match #77 was the case that found it: the
+underdogs won two games of three, were expected to win 46% of them, and lost a
+point each.
+
+Two things changed together. The margin curve was flattened (`MOV_GAIN` 1.5 →
+1.0), because at 1.5 an ordinary 21-18 and a 25-23 deuce both bottomed out at
+the same weight while a 10-21 loss was worth three times either — a margin was
+overturning results rather than adjusting them. And the guarantee above was
+added on top, so the case can't come back through some other door.
+
+Nobody is *floored at zero while the other side keeps its gain* — that would
+mint rating out of nothing, and [the ladder conserves](#the-books-balance). Both
+sides get zero, together.
+
+The cost, stated plainly: scraping a 2-1 past someone far below you used to
+*cost* rating, and now it's merely worth nothing. Padding a record against weak
+opposition is neutral rather than punished.
+
 **Every game is rated on its own, and they add up.** A session runs as long as
 you have time for — two games at lunch, fifteen on a Friday. That length is
 information, not noise: winning 8 of 10 is a far stronger claim than winning 2
@@ -633,8 +660,10 @@ spins or settled bets.
 
 Two knobs do most of the tuning:
 
-- **`MOV_GAIN`** — how much the scoreline matters. At 1.0 a whitewash is worth
-  2× a deuce-fest; at the current 1.5 it's ~2.9×; at 2.0, ~4.3×.
+- **`MOV_GAIN`** — how much the scoreline matters. At the current 1.0 a whitewash
+  is worth ~2× a deuce-fest; at 1.5 it's ~2.9×; at 2.0, ~4.3×. It was 1.5, and
+  that was steep enough to let one heavy loss outweigh two wins — see
+  [Winning never costs you](#winning-never-costs-you).
 - **`K_SETTLED`** — overall volatility once people have played. Everything
   scales with it.
 - **`K_NEW`** and **`K_DECAY`** — how hard a newcomer's first games count, and

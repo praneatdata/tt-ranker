@@ -58,10 +58,16 @@ def test_mov_ignores_which_side_won():
     assert elo.mov_multiplier(-7) == elo.mov_multiplier(7)
 
 
-def test_a_whitewash_moves_about_three_times_a_deuce_fest():
-    """The margin knob, stated as the ratio players will actually notice."""
+def test_a_whitewash_moves_about_twice_a_deuce_fest():
+    """The margin knob, stated as the ratio players will actually notice.
+
+    It was about 3x, at MOV_GAIN 1.5. That curve was steep enough to let one
+    heavy loss outweigh two wins — see the note on MOV_GAIN — so it is 1.0 now
+    and the ratio is about 2x. The scoreline still plainly matters; what it no
+    longer does is decide a session on its own.
+    """
     sweep, tight = gain(P("a"), P("b"), SWEEP), gain(P("a"), P("b"), TIGHT)
-    assert 2.5 < sweep / tight < 3.3
+    assert 1.8 < sweep / tight < 2.5
 
 
 # --- the upset correction --------------------------------------------------
@@ -150,10 +156,16 @@ def test_losing_to_someone_stronger_costs_less():
     assert to_worse < to_better < 0
 
 
-def test_scraping_past_someone_far_below_you_can_cost_rating():
-    """Not a bug: you were expected to take about 9 games in 10, and 2-1 is
-    well short of that. The README says so in as many words."""
-    assert gain(P("a", 1400), P("b", 1000), CLOSE_WIN) < 0
+def test_scraping_past_someone_far_below_you_pays_nothing():
+    """It used to *cost* rating — you were expected to take about 9 games in 10,
+    and 2-1 is well short of that, so the arithmetic said you had gone backwards.
+
+    That is defensible and it is no longer what happens: winning a session never
+    costs rating now, so a scrape past someone far below you is worth exactly
+    nothing instead. The disincentive is softer — padding your record against
+    weak opposition is neutral rather than punished — and the trade is that
+    nobody is ever shown a loss next to a win they earned."""
+    assert gain(P("a", 1400), P("b", 1000), CLOSE_WIN) == 0
 
 
 def test_a_newcomer_moves_far_further_than_a_veteran():
@@ -363,8 +375,13 @@ def test_a_skunk_is_the_most_decisive_result_there_is():
     """House rule: reach 11-0 and the game is over. Its winning score is 11, so
     it reads as a complete game-to-11 whitewash rather than a half-played game
     to 21 — which is what it is."""
-    assert elo.mov_multiplier(11, 11) == elo.MOV_MAX
-    assert elo.mov_multiplier(11, 11) >= elo.mov_multiplier(19, 21)   # vs 21-2
+    # Asserted as "nothing beats it" rather than "it equals MOV_MAX": hitting
+    # the ceiling was an artefact of the old steeper curve, and the claim worth
+    # holding is that no real scoreline is more decisive than a skunk.
+    skunk = elo.mov_multiplier(11, 11)
+    for margin, winner_points in ((19, 21), (16, 21), (9, 11), (13, 21)):
+        assert skunk >= elo.mov_multiplier(margin, winner_points)
+    assert skunk > elo.mov_multiplier(4, 11)      # and well clear of a normal win
 
 
 def test_a_skunk_beats_a_normal_win_by_about_double():
@@ -481,3 +498,62 @@ def test_a_floored_partner_does_not_cost_their_opponents_unevenly():
     gains = [rated["deltas"]["w1"], rated["deltas"]["w2"]]
     assert abs(gains[0] - gains[1]) <= 1
     assert sum(rated["deltas"].values()) == 0
+
+
+# --- winning never costs you ----------------------------------------------
+
+def test_winning_a_session_never_costs_rating():
+    """The one complaint the ladder actually produced. Match #77: the underdogs
+    won two games of three, got blown out in the third, and lost rating."""
+    a = [{"uid": "a", "rating": 956, "games": 50}]
+    b = [{"uid": "b", "rating": 982, "games": 50}]
+    out = elo.rate_match(a, b, [(10, 21), (25, 23), (21, 18)])
+    assert out["deltas"]["a"] >= 0, "the side that won the session lost rating"
+    assert out["deltas"]["b"] <= 0
+
+
+@pytest.mark.parametrize("games", [
+    [(10, 21), (25, 23), (21, 18)],      # two narrow wins, one thrashing
+    [(2, 11), (11, 9), (11, 9)],         # the same shape, games to 11
+    [(0, 21), (21, 19), (21, 19)],       # a whitewash against, two squeakers
+    [(1, 11), (12, 10), (11, 9), (3, 11), (11, 9)],   # 3-2 with two maulings
+])
+def test_the_side_that_won_more_games_never_goes_down(games):
+    for ra, rb in ((1000, 1000), (800, 1200), (1200, 800)):
+        out = elo.rate_match([{"uid": "a", "rating": ra, "games": 50}],
+                             [{"uid": "b", "rating": rb, "games": 50}], games)
+        won_a = sum(1 for x, y in games if x > y) > sum(1 for x, y in games if y > x)
+        winner = "a" if won_a else "b"
+        assert out["deltas"][winner] >= 0, (games, ra, rb, out["deltas"])
+
+
+def test_a_session_that_settles_nothing_moves_nobody():
+    """Zeroed rather than floored: flooring the winner at zero would leave the
+    loser holding a gain minted out of nothing, and the ladder conserves."""
+    out = elo.rate_match([{"uid": "a", "rating": 956, "games": 50}],
+                         [{"uid": "b", "rating": 982, "games": 50}],
+                         [(10, 21), (25, 23), (21, 18)])
+    assert sum(out["deltas"].values()) == 0
+
+
+def test_the_guarantee_does_not_touch_an_ordinary_win():
+    """It only bites when the margins point the other way from the result."""
+    out = elo.rate_match([{"uid": "a", "rating": 1000, "games": 50}],
+                         [{"uid": "b", "rating": 1000, "games": 50}],
+                         [(21, 15), (21, 17)])
+    assert out["deltas"]["a"] > 0
+
+
+def test_losing_a_session_can_still_cost_nothing_but_never_pays():
+    """The mirror: the losing side is never handed rating either."""
+    out = elo.rate_match([{"uid": "a", "rating": 1000, "games": 50}],
+                         [{"uid": "b", "rating": 1000, "games": 50}],
+                         [(21, 19), (10, 21), (12, 21)])
+    assert out["deltas"]["a"] <= 0 and out["deltas"]["b"] >= 0
+
+
+def test_a_drawn_session_is_untouched_by_the_guarantee():
+    out = elo.rate_match([{"uid": "a", "rating": 1000, "games": 50}],
+                         [{"uid": "b", "rating": 1000, "games": 50}],
+                         [(21, 10), (10, 21)])
+    assert out["deltas"] == {"a": 0, "b": 0}
