@@ -23,6 +23,23 @@ Release = namedtuple("Release", "date name summary changes prs")
 
 RELEASES = (
     Release(
+        "2026-09-22", "Winning never costs you",
+        "Win the session and your rating can't go down. Lose it and it can't go up.",
+        (
+            "Match #77 found it: two games won of three against a higher-rated "
+            "pair, and the winners each lost a point. The scorelines were "
+            "outweighing the result instead of adjusting it.",
+            "The margin curve is flatter now. A 21-18 and a 25-23 used to count "
+            "the same — both bottomed out — while a 10-21 loss counted three "
+            "times either. A whitewash is still worth about twice a deuce-fest.",
+            "Where the scorelines point the other way from the result, the "
+            "session is now scored as a draw and nobody moves at all.",
+            "The trade: scraping a 2-1 past somebody far below you used to cost "
+            "rating, and is now simply worth nothing.",
+        ),
+        (),
+    ),
+    Release(
         "2026-09-22", "Open calls",
         "Call out a level rather than a person, and let the channel answer.",
         (
