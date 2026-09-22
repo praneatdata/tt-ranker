@@ -355,11 +355,18 @@ def reschedule(record, when, by="", now=None):
     pool. Moving the time keeps the bets, because the bet was on who wins, not
     on when they played.
 
-    **A window that has already shut stays shut.** If the old start time has
-    passed, the match may have begun, and anyone who watched two games knows
-    something the pool does not. Reopening betting on the strength of a
-    postponement is the one way this could be used to steal spins, so a closed
-    fixture moves its time and keeps its pool frozen. An open one stays open.
+    **Moving a fixture reopens betting**, because a match that hasn't been
+    played yet is one people should be able to back. A window shut by the old
+    start time going by is reopened by the new one being in the future — the
+    state follows the clock, the same way is_abandoned() does.
+
+    The risk this accepts, stated so nobody has to rediscover it: if the match
+    actually started before it was moved, somebody who watched two games knows
+    more than the pool does and can now bet on it. The guard is daylight rather
+    than a rule — the fixture says it was moved and betting reopened, right next
+    to the button — which is the same guard the house rule on backing against
+    yourself uses. If it is ever abused, the fix is to reopen only when the old
+    start time hadn't yet passed.
     """
     now = now or store.now_ist()
     state = record.get("state")
@@ -374,10 +381,14 @@ def reschedule(record, when, by="", now=None):
     if was and abs((when - was).total_seconds()) < 60:
         return False, "That's when it was already set for."
 
+    reopened = state == "closed"
     record["starts_at"] = store.stamp(when)
     record["moved_at"] = store.stamp(now)
     record["moved_by"] = by or ""
     record["moves"] = int(record.get("moves", 0)) + 1
+    record["reopened"] = bool(record.get("reopened")) or reopened
+    if reopened:
+        record["state"] = "open"
     save(record)
     return True, ""
 

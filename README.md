@@ -1302,13 +1302,20 @@ moving the time keeps the pool. Before this the only way to shift a match was to
 call it off and put it up again, which hands all the money back and loses the
 betting the fixture had already attracted.
 
-**A window that has already shut stays shut.** If the original start time has
-passed, the match may have begun — and someone who watched two games of it knows
-something the pool doesn't. Reopening betting on the strength of a postponement
-is the one way this could be used to steal spins, so a closed fixture moves its
-time and keeps its pool frozen at whatever was in it. An open one stays open and
-keeps taking bets until the *new* start time. The channel is told which of the
-two happened, rather than left to work it out.
+**Moving a fixture reopens betting.** A match that hasn't been played yet is one
+people should be able to back, so the window follows the clock: shut by the old
+start time going by, reopened by the new one being in the future — the same way
+a moved fixture is abandoned from its new time rather than its old one. Whatever
+was already staked stays staked; reopening lets more in, it doesn't hand
+anything back.
+
+That accepts a risk, stated here so nobody has to rediscover it: if the match
+*did* start before it was moved, somebody who watched the first two games knows
+more than the pool does and can now bet on it. **The guard is daylight rather
+than a rule** — the fixture message says betting reopened after having shut,
+right next to the buttons, and the channel is told the same — which is the guard
+the house rule on backing against yourself already uses. If it's ever abused,
+the fix is one condition: reopen only when the old start time hadn't yet passed.
 
 A moved fixture is also abandoned from its **new** time, so the daily sweep
 can't refund a match that has been postponed into the future because the old

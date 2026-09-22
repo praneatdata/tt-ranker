@@ -1968,7 +1968,13 @@ def fixture_blocks(record, now=None):
         # changed without having to scroll for the announcement.
         times = "" if int(record["moves"]) == 1 else f" ({record['moves']} times)"
         by = f" by <@{record['moved_by']}>" if record.get("moved_by") else ""
-        blocks.append(_context(f":clock3: Moved{by}{times}. Stakes stand."))
+        note = f":clock3: Moved{by}{times}. Stakes stand."
+        if record.get("reopened"):
+            # This is where the bet buttons are, so it is where the warning has
+            # to be. The channel note scrolls away; this doesn't.
+            note += (" Betting reopened after it had already shut — it may have "
+                     "started once already.")
+        blocks.append(_context(note))
 
     if state in ("open", "closed"):
         blocks.append(_section(pool_line(record, pot)))
@@ -2942,9 +2948,12 @@ def apply_reschedule(sid, when, user, client, now=None, logger=None):
     if pot:
         note += (f" {fmt_spins(pot)} already staked — stakes stand, nobody is "
                  "refunded.")
-    if record.get("state") == "closed":
-        note += (" Betting stays shut: the window closed when it was first due, "
-                 "and a postponement shouldn't reopen it.")
+    if record.get("reopened"):
+        # Said out loud every time, not just the first: whoever is about to back
+        # it should know the match may already have started once, because
+        # somebody who watched it start knows more than the pool does.
+        note += (" *Betting is open again* until the new start — it had already "
+                 "shut. Worth knowing if anyone saw them play the first time.")
     _announce_fixture(record, client, note, logger=logger)
     return None
 

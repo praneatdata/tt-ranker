@@ -115,10 +115,10 @@ def test_a_finished_fixture_cannot_be_moved(fake, state):
 
 # --- the rule that matters -------------------------------------------------
 
-def test_a_window_that_has_shut_stays_shut(fake):
-    """A match that was due at one o'clock may have been played. Anyone who
-    watched two games of it knows something the pool does not, so postponing it
-    must not reopen betting — that is the one way this could steal spins."""
+def test_moving_a_fixture_reopens_betting(fake):
+    """A match that hasn't been played yet is one people should be able to back,
+    so the window follows the clock: shut by the old start time going by,
+    reopened by the new one being in the future."""
     now = store.now_ist()
     record = fixture_at(10, now=now)
     later = now + timedelta(minutes=11)
@@ -128,13 +128,45 @@ def test_a_window_that_has_shut_stays_shut(fake):
     ok, why = betting.reschedule(record, later + timedelta(hours=3), by=A, now=later)
     assert ok, why
     moved = betting.get(record["id"])
-    assert moved["state"] == "closed", "postponing must not reopen the window"
+    assert moved["state"] == "open", "moving it should let people back it again"
 
-    placed, message = betting.place_bet(moved, C, "a", 50, now=later)
+    placed, _ = betting.place_bet(moved, C, "a", 50, now=later)
+    assert placed
+
+
+def test_a_reopened_window_shuts_again_at_the_new_time(fake):
+    now = store.now_ist()
+    record = fixture_at(10, now=now)
+    later = now + timedelta(minutes=11)
+    betting.close_if_due(record, later)
+    betting.reschedule(record, later + timedelta(hours=1), by=A, now=later)
+    moved = betting.get(record["id"])
+    placed, message = betting.place_bet(moved, C, "a", 50,
+                                        now=later + timedelta(hours=2))
     assert not placed and "closed" in message
 
 
-def test_the_pool_on_a_shut_window_is_still_frozen_at_what_it_was(fake):
+def test_a_reopened_fixture_says_so(fake):
+    """The guard is daylight, not a rule: whoever bets after a move can see that
+    the match may already have started once."""
+    now = store.now_ist()
+    record = fixture_at(10, now=now)
+    later = now + timedelta(minutes=11)
+    betting.close_if_due(record, later)
+    betting.reschedule(record, later + timedelta(hours=3), by=A, now=later)
+    assert betting.get(record["id"])["reopened"] is True
+
+
+def test_an_open_fixture_moved_was_never_reopened(fake):
+    """Nothing to flag — its window never shut in the first place."""
+    now = store.now_ist()
+    record = fixture_at(60, now=now)
+    betting.reschedule(record, now + timedelta(hours=3), by=A, now=now)
+    assert not betting.get(record["id"]).get("reopened")
+
+
+def test_the_stakes_already_in_survive_a_reopening(fake):
+    """Reopening lets more in; it doesn't hand back what was already staked."""
     now = store.now_ist()
     record = fixture_at(10, now=now)
     betting.place_bet(record, C, "a", 300, now=now)
@@ -142,6 +174,8 @@ def test_the_pool_on_a_shut_window_is_still_frozen_at_what_it_was(fake):
     betting.close_if_due(record, later)
     betting.reschedule(record, later + timedelta(hours=3), by=A, now=later)
     assert betting.pool(record["id"])["total"] == 300
+    betting.place_bet(betting.get(record["id"]), D, "b", 100, now=later)
+    assert betting.pool(record["id"])["total"] == 400
 
 
 def test_a_moved_fixture_is_abandoned_from_its_new_time(fake):
@@ -232,14 +266,15 @@ def test_moving_it_tells_the_channel(fake):
     assert "stakes stand" in posted["text"].lower()
 
 
-def test_a_closed_fixture_says_betting_stays_shut(fake):
+def test_a_reopened_fixture_tells_the_channel_betting_is_back_on(fake):
     now = store.now_ist()
     record = fixture_at(10, now=now)
     later = now + timedelta(minutes=11)
     betting.close_if_due(record, later)
     client = MagicMock()
     bot.apply_reschedule(record["id"], later + timedelta(hours=3), A, client, later)
-    assert "stays shut" in client.chat_postMessage.call_args.kwargs["text"].lower()
+    said = client.chat_postMessage.call_args.kwargs["text"].lower()
+    assert "betting is open again" in said
 
 
 def test_the_fixture_message_offers_the_button_while_it_is_open(fake):
@@ -269,3 +304,24 @@ def test_the_message_says_it_has_been_moved(fake):
     flat = " ".join(el["text"] for b in blocks if b["type"] == "context"
                     for el in b["elements"])
     assert "Moved" in flat and "Stakes stand" in flat
+
+
+def test_the_fixture_message_warns_that_betting_reopened(fake):
+    """The channel note scrolls away; this sits next to the bet buttons."""
+    now = store.now_ist()
+    record = fixture_at(10, now=now)
+    later = now + timedelta(minutes=11)
+    betting.close_if_due(record, later)
+    betting.reschedule(record, later + timedelta(hours=3), by=A, now=later)
+    flat = " ".join(el["text"] for b in bot.fixture_blocks(betting.get(record["id"]), later)
+                    if b["type"] == "context" for el in b["elements"])
+    assert "Betting reopened" in flat
+
+
+def test_a_fixture_moved_before_it_was_due_carries_no_such_warning(fake):
+    now = store.now_ist()
+    record = fixture_at(60, now=now)
+    betting.reschedule(record, now + timedelta(hours=3), by=A, now=now)
+    flat = " ".join(el["text"] for b in bot.fixture_blocks(betting.get(record["id"]), now)
+                    if b["type"] == "context" for el in b["elements"])
+    assert "Moved" in flat and "reopened" not in flat
