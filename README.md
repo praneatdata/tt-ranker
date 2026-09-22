@@ -289,6 +289,14 @@ carries no DM — its button is in the channel, where the people who could answe
 it are — so `/tt withdraw` is the only way to take one back, which is why it now
 exists.
 
+**An open call isn't anybody's to turn down.** `/tt decline` works on a challenge
+aimed *at you* — being asked is what gives you the standing to say no. An open
+call is addressed to the channel, so nobody has been asked, and one uninterested
+passer-by declining it would close an invitation meant for everyone. Leave it for
+somebody else, or `/tt withdraw` it if it's yours. (Not even the person who
+posted it declines it; taking it back is a withdrawal, which is what actually
+happened.)
+
 Accepted, it becomes an ordinary fixture: betting, `/tt reschedule` and calling
 it off all work on it exactly as they already did.
 

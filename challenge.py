@@ -277,6 +277,21 @@ def may_answer(record, uid):
     return uid in set(record.get("side_b", ()))
 
 
+def may_decline(record, uid):
+    """Who is allowed to say no — which is not the same set as may_answer().
+
+    On a directed challenge they match: being asked is what gives you the
+    standing to turn it down. An open call is addressed to the channel, so
+    nobody has been asked and nobody can answer for everyone. Declining one
+    would let a single uninterested passer-by close an invitation meant for
+    forty people, which is a veto nobody was offered — so the way to decline an
+    open call is to leave it alone.
+    """
+    if is_open_call(record):
+        return False
+    return may_answer(record, uid)
+
+
 def may_withdraw(record, uid):
     """Whoever threw it down, or anyone on their side."""
     return uid in set(record.get("side_a", ())) or uid == record.get("from")

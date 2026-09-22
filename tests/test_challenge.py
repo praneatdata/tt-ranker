@@ -873,3 +873,57 @@ def test_the_outstanding_list_says_what_an_open_call_is_open_to(fake):
     bot.handle_challenges({"user_id": A, "text": "challenges"}, respond)
     printed = respond.call_args[0][0]
     assert "anyone" in printed and "900–1100" in printed
+
+
+# --- an open call is not anybody's to turn down ----------------------------
+
+def test_a_bystander_cannot_decline_an_open_call(fake):
+    """It is addressed to the channel, so nobody has been asked and nobody can
+    answer for everyone. One uninterested passer-by typing `decline` would
+    otherwise close an invitation meant for forty people."""
+    record = challenge.issue([A], [], 3, by=A, first_to=2, channel="C1",
+                             band=(900, 1100))
+    out = bot.answer_challenge(record["id"], C, "decline", MagicMock())
+    assert "nothing to turn down" in out
+    assert challenge.get(record["id"])["state"] == "open"
+    assert [r["id"] for r in challenge.live()] == [record["id"]]
+
+
+def test_not_even_the_person_who_posted_it_declines_an_open_call(fake):
+    """Theirs to withdraw, which says what actually happened, not to decline."""
+    record = challenge.issue([A], [], 3, by=A, first_to=2, channel="C1",
+                             band=(900, 1100))
+    out = bot.answer_challenge(record["id"], A, "decline", MagicMock())
+    assert "withdraw" in out
+    assert challenge.get(record["id"])["state"] == "open"
+
+
+def test_an_open_call_can_still_be_taken_back_by_its_owner(fake):
+    record = challenge.issue([A], [], 3, by=A, first_to=2, channel="C1",
+                             band=(900, 1100))
+    assert bot.answer_challenge(record["id"], A, "withdraw", MagicMock()) is None
+    assert challenge.get(record["id"])["state"] == "withdrawn"
+
+
+def test_a_directed_challenge_is_still_declinable_by_its_target(fake):
+    """The fix narrows open calls only — being asked is what gives you the
+    standing to say no, and on a directed challenge you were asked."""
+    record = issue(side_a=[A], side_b=[B])
+    assert bot.answer_challenge(record["id"], B, "decline", MagicMock()) is None
+    assert challenge.get(record["id"])["state"] == "declined"
+
+
+def test_a_bystander_still_cannot_decline_a_directed_challenge(fake):
+    record = issue(side_a=[A], side_b=[B])
+    out = bot.answer_challenge(record["id"], C, "decline", MagicMock())
+    assert "Only" in out
+    assert challenge.get(record["id"])["state"] == "open"
+
+
+def test_declining_and_accepting_are_gated_separately(fake):
+    """C may take the open call but may not kill it — the two questions have
+    different answers, which is the whole point of may_decline()."""
+    record = challenge.issue([A], [], 3, by=A, first_to=2, channel="C1",
+                             band=(900, 1100))
+    assert challenge.may_answer(record, C) is True
+    assert challenge.may_decline(record, C) is False

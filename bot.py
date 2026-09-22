@@ -1571,9 +1571,10 @@ QUICK = (
         # The forms are spelled out above this list, so the entry is a
         # signpost rather than a fourth copy of the same example.
         ("log", "", "record a session — forms above"),
-        ("challenge", "@bob best of 5", "call someone out"),
+        ("challenge", "@bob best of 5", "call someone out — or `open ±100` for anyone near your level"),
         ("accept", "4", "take a challenge"),
         ("decline", "4", "turn one down"),
+        ("withdraw", "4", "take back a challenge of your own"),
         ("challenges", "", "what's outstanding"),
         ("schedule", "@bob 6pm", "put a fixture up for the channel to back"),
         ("reschedule", "6 7pm", "running late — move it, stakes intact"),
@@ -2689,12 +2690,20 @@ def answer_challenge(cid, user, verb, client, now=None, logger=None,
         return ":information_source: There's no challenge by that number."
     if record.get("state") != "open":
         return f":information_source: That one was already {record['state']}."
-    allowed = (challenge.may_withdraw(record, user) if verb == "withdraw"
-               else challenge.may_answer(record, user))
+    allowed = {"withdraw": challenge.may_withdraw,
+               "decline": challenge.may_decline,
+               "accept": challenge.may_answer}[verb](record, user)
     if not allowed:
         if verb == "withdraw":
             return ":lock: Only whoever threw it down can take it back."
         if challenge.is_open_call(record):
+            # Declining is gated separately from accepting on an open call: it
+            # is addressed to the channel, so one passer-by turning it down
+            # would close it for everybody who hadn't looked yet.
+            if verb == "decline":
+                return (":person_shrugging: That one's open to the channel, so "
+                        "there's nothing to turn down — just leave it for "
+                        f"somebody else. `/tt withdraw {cid}` if it's yours.")
             return ":person_shrugging: That's your own challenge — somebody else has to take it."
         return f":lock: Only {fmt_side(record['side_b'])} can answer that one."
 
