@@ -23,6 +23,46 @@ Release = namedtuple("Release", "date name summary changes prs")
 
 RELEASES = (
     Release(
+        "2026-09-22", "Open calls",
+        "Call out a level rather than a person, and let the channel answer.",
+        (
+            "`/tt challenge open ±100 bo5` — anyone rated near you can take it, "
+            "first come. Also an explicit range, `1100-1250`, or `+150` for "
+            "anyone above you.",
+            "Doubles brings a pair each side: you name yours when you post it, "
+            "whoever takes it names theirs, and the pair is judged on the "
+            "average of the two ratings.",
+            "The band is checked when somebody presses, not when the call went "
+            "up — people drift, and the honest question is whether you are a "
+            "fair match now.",
+            "An open call is nobody's to turn down: leave it for somebody else, "
+            "or `/tt withdraw` it if it is yours.",
+        ),
+        (23,),
+    ),
+    Release(
+        "2026-09-22", "Every command, and a guess when you mistype one",
+        "`/tt help` is the whole list now, and a typo gets a suggestion.",
+        (
+            "Every command, grouped by what you are trying to do. It used to "
+            "list about two thirds of them with no way of noticing.",
+            "`/tt boad` answers *did you mean `/tt board`* instead of printing "
+            "the manual at you — and says nothing when nothing is close.",
+            "Admin commands are listed only for admins.",
+        ),
+        (21,),
+    ),
+    Release(
+        "2026-09-22", "Release notes",
+        "This page, and a line in every footer saying what you are looking at.",
+        (
+            "What changed and when, newest first — written for players rather "
+            "than generated from commits.",
+            "The footer of every page names the current release and links here.",
+        ),
+        (22,),
+    ),
+    Release(
         "2026-09-18", "Closed books",
         "Every match conserves now: whatever one side gains, the other loses.",
         (
