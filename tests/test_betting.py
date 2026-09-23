@@ -8,6 +8,7 @@ from datetime import timedelta
 import pytest
 
 import betting
+import bot
 import kv
 import store
 from tests.fake_kv import FakeRedis
@@ -606,3 +607,57 @@ def test_a_week_of_matches_mints_far_less_than_one_stipend(fake, stipend_on):
     what it did — if that stops being true, WIN_PRIZE is the dial."""
     a_week_of_wipeouts = 85 * 20 * 1.5        # every match a 3-0, some doubles
     assert a_week_of_wipeouts < betting.WEEKLY_STIPEND * 43 * 0.1
+
+
+# --- the book, split by what you can do about each -------------------------
+
+def test_the_book_separates_betting_from_awaiting_a_result(fake):
+    """Two different jobs. One list mixing them makes the second invisible,
+    which is how matches end up sitting on other people's money unnoticed."""
+    now = store.now_ist()
+    taking = fixture_at(60, side_a=[A], side_b=[B], now=now)
+    waiting = fixture_at(10, side_a=[C], side_b=[D], now=now)
+    betting.close_if_due(waiting, now + timedelta(minutes=11))
+    text = bot.book_text([taking, betting.get(waiting["id"])], now=now)
+    assert "Betting open" in text and "Waiting on a result" in text
+    assert text.index("Betting open") < text.index("Waiting on a result")
+    assert text.index(f"#{taking['id']}") < text.index("Waiting on a result")
+
+
+def test_the_book_says_when_a_stuck_pot_will_be_refunded(fake):
+    now = store.now_ist()
+    record = fixture_at(10, now=now)
+    later = now + timedelta(hours=betting.ABANDON_HOURS - 3)
+    betting.close_if_due(record, later)
+    text = bot.book_text([betting.get(record["id"])], now=later)
+    assert "refunds in 3h" in text
+
+
+def test_a_pot_already_past_the_window_says_so(fake):
+    now = store.now_ist()
+    record = fixture_at(10, now=now)
+    later = now + timedelta(hours=betting.ABANDON_HOURS + 1)
+    betting.close_if_due(record, later)
+    assert "refunding shortly" in bot.book_text([betting.get(record["id"])], now=later)
+
+
+def test_a_fixture_days_from_its_deadline_is_not_nagged_about(fake):
+    now = store.now_ist()
+    record = fixture_at(10, now=now)
+    later = now + timedelta(minutes=11)
+    betting.close_if_due(record, later)
+    text = bot.book_text([betting.get(record["id"])], now=later)
+    assert "refunds in" not in text and "refunding shortly" not in text
+
+
+def test_an_empty_pot_reads_as_empty_rather_than_zero(fake):
+    now = store.now_ist()
+    record = fixture_at(60, now=now)
+    assert "nothing staked yet" in bot.book_text([record], now=now)
+
+
+def test_the_book_shows_a_balance_only_when_it_is_asked_for(fake):
+    now = store.now_ist()
+    record = fixture_at(60, now=now)
+    assert "Balance" in bot.book_text([record], balance=4200, now=now)
+    assert "Balance" not in bot.book_text([record], now=now)

@@ -88,7 +88,7 @@ Everything is one slash command, `/tt`.
 | `/tt accept 4` · `/tt decline 4` | Answer a challenge — the DM buttons do the same |
 | `/tt challenges` | Every challenge still waiting on an answer |
 | `/tt shame` · `/tt shame @bob` | The wall of shame — results thrown out, challenges ducked |
-| `/tt book` · `/tt book 6` | Open fixtures · one in full, with every stake |
+| `/tt book` · `/tt book 6` | Fixtures — betting open, and waiting on a result · one in full |
 | `/tt wallet` | Your spins and recent moves |
 | `/tt transfer @bob 500` | Admins only — move spins between wallets |
 | `/tt help` | All of the above, in Slack |

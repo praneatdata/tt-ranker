@@ -1611,7 +1611,7 @@ QUICK = (
         ("wallet", "", "what you hold"),
         ("rich", "", "the spins table"),
         ("bet", "12 a 50", "back a side — the buttons are the usual way"),
-        ("book", "", "fixtures open to bet on"),
+        ("book", "", "fixtures — betting open, and waiting on a result"),
     )),
     ("You", (
         ("register", "", "join the ladder before your first match"),
@@ -3364,13 +3364,44 @@ def handle_book(command, respond):
     if not records:
         respond(":date: Nothing scheduled. `/tt schedule @opponent 6pm` opens one.")
         return
+    respond(book_text(records, betting.balance(command["user_id"])))
+
+
+def book_text(records, balance=None, now=None):
+    """The book, split by what you can actually do about each one.
+
+    Betting on a fixture and logging the result of one are different jobs, and a
+    single list mixing them makes the second invisible — which is how thirteen
+    matches ended up sitting on other people's money with nobody noticing.
+    """
+    now = now or store.now_ist()
+    taking = [r for r in records if r.get("state") == "open"]
+    waiting = sorted((r for r in records if r.get("state") == "closed"),
+                     key=lambda r: r.get("starts_at") or "")
     lines = [":date: *The book*"]
-    for record in records:
-        pot = betting.pool(record["id"])
-        shut = "open" if record["state"] == "open" else "closed"
-        lines.append(
-            f"`#{record['id']}`  {fmt_side(record['side_a'])} vs "
-            f"{fmt_side(record['side_b'])} · {fmt_when(record)} · {shut} · "
-            f"{fmt_spins(pot['total'])} in the pot")
-    lines.append(f"\n_Balance: *{fmt_spins(betting.balance(command['user_id']))}*._")
-    respond("\n".join(lines))
+
+    def row(record, tail=""):
+        pot = betting.pool(record["id"])["total"]
+        return (f"`#{record['id']}`  {fmt_side(record['side_a'])} vs "
+                f"{fmt_side(record['side_b'])} · {fmt_when(record, now)} · "
+                + (f"{fmt_spins(pot)} in the pot" if pot else "nothing staked yet")
+                + tail)
+
+    if taking:
+        lines.append("\n*Betting open*")
+        lines.extend(row(r) for r in taking)
+    if waiting:
+        lines.append("\n*Waiting on a result* — log it and the pot settles")
+        for record in waiting:
+            when = betting.starts_at(record)
+            left = ""
+            if when:
+                hours = betting.ABANDON_HOURS - (now - when).total_seconds() / 3600
+                left = (f" · _refunds in {hours:.0f}h_" if 0 < hours <= 6
+                        else " · _refunding shortly_" if hours <= 0 else "")
+            lines.append(row(record, left))
+        lines.append(f"_Nothing logged within {betting.ABANDON_HOURS}h of the "
+                     "start and every stake goes back._")
+    if balance is not None:
+        lines.append(f"\n_Balance: *{fmt_spins(balance)}*._")
+    return "\n".join(lines)
