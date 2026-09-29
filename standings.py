@@ -32,9 +32,10 @@ def record_invocation(user_agent, authorized=True, now=None):
     fields = {f"last_{kind}_at": store.stamp(now), f"last_{kind}_ua": ua}
     if not authorized:
         fields["last_denied_at"] = store.stamp(now)
+    args = [part for item in fields.items() for part in item]
     try:
-        kv.hset_many(CALLS_KEY, fields)
-        kv.hincrby(CALLS_KEY, f"{kind}_count", 1)
+        kv.pipeline([["HSET", CALLS_KEY, *args],
+                     ["HINCRBY", CALLS_KEY, f"{kind}_count", 1]])
     except Exception:
         pass
 
@@ -193,8 +194,9 @@ def sweep_fixtures(client, now=None, dry_run=False, logger=None):
                 continue
             if not betting.claim(record["id"]):
                 continue
-            refunded = betting.pool(record["id"])["total"]
-            betting.void(record, "no result was ever logged", now)
+            placed = betting.bets(record["id"])
+            refunded = betting.pool_from(placed)["total"]
+            betting.void(record, "no result was ever logged", now, placed=placed)
             import shame
             shame.record_many(record["side_a"] + record["side_b"], "bailed")
             bot._refresh_with(record, client, [

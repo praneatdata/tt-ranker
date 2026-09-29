@@ -120,9 +120,9 @@ def live():
     """Every challenge still awaiting an answer, oldest first. An id whose JSON
     has aged out is dropped from the set rather than left to be re-read."""
     out, stale = [], []
-    for cid in (kv.smembers(LIVE_KEY) or []):
-        record = get(cid)
-        (out.append(record) if record else stale.append(cid))
+    ids = list(kv.smembers(LIVE_KEY) or [])
+    for cid, raw in zip(ids, kv.mget(chal_key(c) for c in ids)):
+        (out.append(json.loads(raw)) if raw else stale.append(cid))
     if stale:
         kv.pipeline([["SREM", LIVE_KEY, cid] for cid in stale])
     return sorted(out, key=lambda r: int(r.get("id", 0) or 0))
