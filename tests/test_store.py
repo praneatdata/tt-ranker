@@ -267,8 +267,8 @@ def test_the_walk_stops_at_the_first_match_older_than_the_window(fake, monkeypat
         confirm(log([A], [B], now=when), by=B, now=when)
     monkeypatch.setattr(store, "MATCH_CHUNK", 2)
     calls = []
-    real = store.kv.pipeline
-    monkeypatch.setattr(store.kv, "pipeline", lambda cmds: calls.append(cmds) or real(cmds))
+    real = store.kv.mget
+    monkeypatch.setattr(store.kv, "mget", lambda keys: calls.append(list(keys)) or real(calls[-1]))
     start = base.replace(hour=0, minute=0)
     found = store.matches_in(start, start + timedelta(days=1))
     assert len(found) == 1
