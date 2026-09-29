@@ -683,6 +683,7 @@ Slack ──▶ /slack/events ──▶ api/index.py (Flask on Vercel)
                                  ├─▶ parsing.py    what someone typed → a match
                                  ├─▶ elo.py        the rating maths, pure functions
                                  ├─▶ store.py      players, pending queue, apply & undo
+                                 ├─▶ prefetch.py   everything a web page reads, in two trips
                                  ├─▶ kv.py         Upstash Redis REST — no SDK
                                  └─▶ standings.py  weekly post + the auto-confirm sweep
                                           ▲
@@ -698,7 +699,8 @@ Slack ──▶ /slack/events ──▶ api/index.py (Flask on Vercel)
 | [betting.py](betting.py) | Spins, fixtures, pools and settlement. No I/O beyond the store. |
 | [page.py](page.py) | The public ladder page — pure rendering, no database. |
 | [standings.py](standings.py) | Weekly standings post, payday, and the daily sweeps. |
-| [kv.py](kv.py) | Minimal Upstash Redis REST client, with pipelining. |
+| [prefetch.py](prefetch.py) | Everything a web page reads, batched into two round trips. |
+| [kv.py](kv.py) | Minimal Upstash Redis REST client: pipelines, transactions, `MGET`. |
 | [api/index.py](api/index.py) | Vercel entry point; also serves `/debug` and `/cron/*`. |
 | [socket_mode.py](socket_mode.py) | Socket Mode entry point for local dev (no public URL). |
 | [manifest.yaml](manifest.yaml) | Slack app manifest (scopes, command, events, interactivity). |
@@ -710,7 +712,9 @@ Slack ──▶ /slack/events ──▶ api/index.py (Flask on Vercel)
    they were logged would otherwise apply stale ratings.
 2. **Every applied match stores a full before-snapshot of each player.** Undo
    restores those records verbatim rather than running the Elo backwards, which
-   isn't invertible once a floor clamp or a streak is involved.
+   isn't invertible once a floor clamp or a streak is involved. It's stored
+   beside the match rather than inside it: it's most of a match's bytes, only
+   undo reads it, and every page reads a hundred-odd matches.
 
 **Storage**
 
@@ -721,7 +725,8 @@ Slack ──▶ /slack/events ──▶ api/index.py (Flask on Vercel)
 | `tt:seq` | string | `INCR` — match and pending ids |
 | `tt:pending` | set | ids awaiting confirmation (and the atomic claim) |
 | `tt:pending:<id>` | string | JSON of an unrated match, 7-day TTL |
-| `tt:match:<id>` | string | JSON of a rated match, including the undo snapshot |
+| `tt:match:<id>` | string | JSON of a rated match (older ones carry their snapshot inline) |
+| `tt:snap:<id>` | string | that match's undo snapshot |
 | `tt:history` | list | applied match ids, newest first |
 | `tt:hist:<uid>` | list | applied match ids that player was in |
 | `tt:wk:<YYYY-Www>:delta` / `:played` | hash | this week's movement, for the weekly post |
@@ -736,6 +741,14 @@ Slack ──▶ /slack/events ──▶ api/index.py (Flask on Vercel)
 Races are handled with atomic claims rather than locks: `SADD` returning 1
 registers a player exactly once, and `SREM` returning 1 means exactly one of two
 people hitting **Confirm** at the same instant gets to rate the match.
+
+**Round trips.** Every call to Upstash is an HTTPS request from a serverless
+function, and every command in it is billed — inside a pipeline too. So reads
+are batched: a web page is two round trips whatever the size of the ladder,
+matches come back through one `MGET` rather than a `GET` each, and a confirmed
+result is written as one `/multi-exec` transaction. The budget for each hot path
+is asserted in [tests/test_round_trips.py](tests/test_round_trips.py); a change
+that adds a trip has to change a number there to pass.
 
 ---
 
@@ -951,7 +964,7 @@ player records, so there's nothing to migrate, nothing to backfill, and no way
 for a title to drift out of step with the ladder it came from. What *is* stored
 is the answer, for five minutes: the weekly figures need a walk over the week's
 matches and no page should pay for that per request. Applying or undoing a match
-drops the cache in the same pipeline that writes the result, so a title never
+drops the cache in the same transaction that writes the result, so a title never
 survives the match that took it away.
 **A player's own page.** `/player/<uid>` — their rating line per format, their
 record, their head-to-head against whoever they've played most, their matches,
