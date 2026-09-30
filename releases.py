@@ -23,6 +23,19 @@ Release = namedtuple("Release", "date name summary changes prs")
 
 RELEASES = (
     Release(
+        "2026-09-30", "Doubles odds from the doubles board",
+        "The odds on a doubles fixture are worked out from doubles ratings now.",
+        (
+            "The odds next to a pool, and `/tt odds`, used everyone's overall "
+            "rating — which counts their singles too. A pair of strong singles "
+            "players looked like favourites in doubles whatever their doubles "
+            "record said.",
+            "Now each format is priced off its own board: doubles off doubles "
+            "ratings, singles off singles ones. `/tt odds` says which it used.",
+        ),
+        (),
+    ),
+    Release(
         "2026-09-22", "Winning pays, and a wall of shame",
         "Spins for taking a session, and a board for everyone who wouldn't play.",
         (

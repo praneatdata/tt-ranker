@@ -673,9 +673,16 @@ def winner_from(record, side_a, games_a, games_b):
 
 def elo_odds(record):
     """(chance side A takes a game, chance side B does) from current ratings —
-    shown next to the pool as a sanity check on what the crowd thinks."""
+    shown next to the pool as a sanity check on what the crowd thinks.
+
+    The format's own ratings, not the overall one: a doubles fixture is priced
+    off how these people play in pairs, and the overall number carries their
+    singles too.
+    """
+    doubles = len(record["side_a"]) > 1
     players = store.load_for_match(record["side_a"] + record["side_b"])
-    entries = lambda side: [{"uid": u, "rating": players[u]["rating"],
-                             "games": elo.games_played(players[u])} for u in side]
+    view = lambda u: store.format_view(players[u], doubles)
+    entries = lambda side: [{"uid": u, "rating": view(u)["rating"],
+                             "games": elo.games_played(view(u))} for u in side]
     chance = elo.win_probability(entries(record["side_a"]), entries(record["side_b"]))
     return chance, 1.0 - chance

@@ -352,9 +352,25 @@ def test_undo_will_not_erase_a_later_match(fake, client):
 
 def test_odds_reads_the_gap(fake, client):
     store.ensure_players([A, B])
-    store.kv.hset(store.player_key(B), "rating", 1400)
+    store.kv.hset(store.player_key(B), "s_rating", 1400)
     odds = said(run(f"odds <@{B}>", client))
     assert "9%" in odds and "91%" in odds
+    assert "singles ratings" in odds
+
+
+def test_doubles_odds_read_the_doubles_board_not_the_overall_one(fake, client):
+    """The overall rating carries singles play, so two pairs level on the
+    doubles board are level — whatever their singles have done to the overall."""
+    store.ensure_players([A, B, C, D])
+    for uid in (A, B):
+        store.kv.hset(store.player_key(uid), "rating", 1400)
+    odds = said(run(f"odds <@{B}> vs <@{C}> <@{D}>", client))
+    assert "*50%*" in odds and "1000 vs 1000" in odds and "doubles ratings" in odds
+
+    for uid in (C, D):
+        store.kv.hset(store.player_key(uid), "d_rating", 1400)
+    odds = said(run(f"odds <@{B}> vs <@{C}> <@{D}>", client))
+    assert "*9%*" in odds and "*91%*" in odds
 
 
 def test_help_needs_no_database(fake, client):
