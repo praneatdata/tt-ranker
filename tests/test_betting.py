@@ -239,6 +239,29 @@ def test_an_empty_pot_settles_to_nothing():
     assert betting.payouts({}, "a") == {}
 
 
+def test_fixture_odds_are_priced_off_the_format_being_played(fake):
+    """A doubles fixture is priced off the doubles board; the overall rating,
+    which carries singles too, doesn't come into it."""
+    store.ensure_players([A, B, C, D])
+    for uid in (A, B):
+        store.kv.hset(store.player_key(uid), "rating", 1400)
+    doubles = fixture_at(side_a=[A, B], side_b=[C, D])
+    assert betting.elo_odds(doubles) == (0.5, 0.5)
+
+    for uid in (C, D):
+        store.kv.hset(store.player_key(uid), "d_rating", 1400)
+    chance_a, chance_b = betting.elo_odds(doubles)
+    assert round(chance_a, 2) == 0.09 and round(chance_b, 2) == 0.91
+
+
+def test_singles_fixture_odds_read_the_singles_board(fake):
+    store.ensure_players([A, B])
+    store.kv.hset(store.player_key(A), "d_rating", 1400)
+    assert betting.elo_odds(fixture_at(side_a=[A], side_b=[B])) == (0.5, 0.5)
+    store.kv.hset(store.player_key(B), "s_rating", 1400)
+    assert round(betting.elo_odds(fixture_at(side_a=[A], side_b=[B]))[1], 2) == 0.91
+
+
 def test_projected_returns_track_the_pool(fake):
     record = fixture_at()
     betting.place_bet(record, C, "a", 300)

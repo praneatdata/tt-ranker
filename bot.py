@@ -1560,14 +1560,18 @@ def handle_odds(command, respond, bot_id=None):
     except parsing.ParseError as e:
         respond(f":warning: {e}")
         return
+    # Priced off the format being asked about, the same as a fixture's odds.
+    doubles = len(side_a) > 1
     players = store.load_for_match(side_a + side_b)
-    entries = lambda side: [{"uid": u, "rating": players[u]["rating"],
-                             "games": elo.games_played(players[u])} for u in side]
+    view = lambda u: store.format_view(players[u], doubles)
+    entries = lambda side: [{"uid": u, "rating": view(u)["rating"],
+                             "games": elo.games_played(view(u))} for u in side]
     chance = elo.win_probability(entries(side_a), entries(side_b))
     ra, rb = elo.team_rating(entries(side_a)), elo.team_rating(entries(side_b))
+    board = "doubles" if doubles else "singles"
     respond(f":crystal_ball: {fmt_side(side_a)} *{round(100 * chance)}%*  ·  "
             f"*{round(100 * (1 - chance))}%* {fmt_side(side_b)}"
-            f"\n_{round(ra)} vs {round(rb)} — per game, on current ratings._")
+            f"\n_{round(ra)} vs {round(rb)} — per game, on current {board} ratings._")
 
 
 # --- the quick list -------------------------------------------------------
@@ -2605,8 +2609,7 @@ def band_rating(uids, doubles):
     what elo.team_rating() already treats a team as being worth.
     """
     players = store.load_for_match(list(uids))
-    view = store.doubles_view if doubles else store.singles_view
-    ratings = [view(players[uid])["rating"] for uid in uids]
+    ratings = [store.format_view(players[uid], doubles)["rating"] for uid in uids]
     return int(round(sum(ratings) / len(ratings))) if ratings else elo.START_RATING
 
 

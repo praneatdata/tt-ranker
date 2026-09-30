@@ -167,6 +167,12 @@ def doubles_view(player):
     return split_view(player, DOUBLES)
 
 
+def format_view(player, doubles):
+    """A player's record in the format being played — what odds and bands are
+    read off, so a doubles question is answered by the doubles board."""
+    return split_view(player, DOUBLES if doubles else SINGLES)
+
+
 def split_players(players, prefix):
     return {uid: split_view(p, prefix) for uid, p in players.items()}
 
