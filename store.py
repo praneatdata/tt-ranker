@@ -8,7 +8,8 @@ Shape of the data
   tt:seq                str    INCR — match and pending ids come from here
   tt:pending            set    ids awaiting confirmation (also the atomic claim)
   tt:pending:<id>       str    JSON of an unrated match, TTL'd
-  tt:match:<id>         str    JSON of a rated match, including an undo snapshot
+  tt:match:<id>         str    JSON of a rated match
+  tt:snap:<id>          str    JSON of that match's undo snapshot (see rule 2)
   tt:history            list   applied match ids, newest first
   tt:hist:<uid>         list   applied match ids that player was in
   tt:wk:<YYYY-Www>:*    hash   this week's rating movement, for the weekly post
@@ -22,6 +23,12 @@ Two rules the rest of the bot depends on:
 2. **Every applied match carries a full before-snapshot of each player.** Undo
    restores those records verbatim rather than trying to run the Elo backwards,
    which is not invertible once a floor clamp or a streak is involved.
+
+   The snapshot is stored beside the match, under tt:snap:<id>, not inside it.
+   It is most of a match's bytes and only undo ever reads it, while every page
+   reads a hundred-odd matches. get_match() puts it back for the one reader that
+   wants it; matches written before the split still carry it inline, and
+   everything here reads either shape.
 """
 import json
 from datetime import datetime, timedelta, timezone
@@ -70,6 +77,10 @@ def pending_key(mid):
 
 def match_key(mid):
     return f"tt:match:{mid}"
+
+
+def snap_key(mid):
+    return f"tt:snap:{mid}"
 
 
 def player_history_key(uid):
@@ -174,7 +185,12 @@ def get_players(uids):
     uids = list(dict.fromkeys(u for u in uids if u))
     if not uids:
         return {}
-    results = kv.pipeline([["HGETALL", player_key(u)] for u in uids])
+    return players_from(uids, kv.pipeline([["HGETALL", player_key(u)] for u in uids]))
+
+
+def players_from(uids, results):
+    """{uid: record} from HGETALLs already fetched, one per uid in order —
+    for a caller that batched them with other reads."""
     out = {}
     for uid, res in zip(uids, results):
         raw = kv.unflatten(res)
@@ -253,8 +269,10 @@ def create_pending(side_a, side_b, games, logged_by, channel=None, now=None):
         "ts": "",
         "dms": {},   # uid -> [channel, ts] of that person's verdict prompt
     }
-    kv.set_(pending_key(record["id"]), json.dumps(record), ex=PENDING_TTL_SECONDS)
-    kv.sadd(PENDING_KEY, record["id"])
+    # Together, so a pending record and its place in the index exist or don't.
+    kv.pipeline([["SET", pending_key(record["id"]), json.dumps(record),
+                  "EX", PENDING_TTL_SECONDS],
+                 ["SADD", PENDING_KEY, record["id"]]], atomic=True)
     return record
 
 
@@ -263,14 +281,16 @@ def get_pending(mid):
     return json.loads(raw) if raw else None
 
 
-def attach_messages(mid, channel, ts, dms=None):
+def attach_messages(mid, channel, ts, dms=None, record=None):
     """Remember every place this session was announced — the channel post and
     each verdict DM — so settling it can update all of them.
 
     Without the DM locations, confirming would leave live buttons sitting in
     other people's DMs for a session that is already decided.
+
+    Pass the `record` the caller already holds to skip reading it back.
     """
-    record = get_pending(mid)
+    record = dict(record) if record else get_pending(mid)
     if not record:
         return None
     record["channel"], record["ts"] = channel or "", ts or ""
@@ -292,8 +312,7 @@ def release_pending(mid):
 
 
 def drop_pending(mid):
-    kv.srem(PENDING_KEY, mid)
-    kv.delete(pending_key(mid))
+    kv.pipeline([["SREM", PENDING_KEY, mid], ["DEL", pending_key(mid)]])
 
 
 def list_pending():
@@ -302,7 +321,7 @@ def list_pending():
     ids = sorted(kv.smembers(PENDING_KEY), key=_as_int)
     if not ids:
         return []
-    raws = kv.pipeline([["GET", pending_key(i)] for i in ids])
+    raws = kv.mget(pending_key(i) for i in ids)
     records, stale = [], []
     for mid, raw in zip(ids, raws):
         if raw:
@@ -342,8 +361,14 @@ def apply_match(record, confirmed_by=None, auto=False, admin=False, now=None):
     now = now or now_ist()
     side_a, side_b = record["side_a"], record["side_b"]
     uids = side_a + side_b
-    ensure_players(uids, now)
-    players = load_for_match(uids, now)
+    # Registering and reading in one trip. Nobody new needs an opening record
+    # written first: a missing hash reads as a fresh player, and the writes
+    # below store every player's whole record anyway.
+    unique = list(dict.fromkeys(uids))
+    results = kv.pipeline([["SADD", PLAYERS_KEY, *unique]]
+                          + [["HGETALL", player_key(u)] for u in unique])
+    found = players_from(unique, results[1:])
+    players = {uid: found.get(uid) or new_player(now) for uid in unique}
 
     def entries(side):
         # K is measured in games played, not sessions — a session is any length.
@@ -397,15 +422,27 @@ def apply_match(record, confirmed_by=None, auto=False, admin=False, now=None):
         "snapshot": {uid: players[uid] for uid in uids},
     })
 
-    writes.append(["SET", match_key(mid), json.dumps(blob)])
+    writes += match_writes(blob)
     # A title is computed from results, so the result that changes hands has to
     # take the cached answer with it.
     writes.append(["DEL", TITLES_KEY])
     writes.append(["LPUSH", HISTORY_KEY, mid])
     writes.append(["LTRIM", HISTORY_KEY, 0, HISTORY_LIMIT - 1])
-    kv.pipeline(writes)
-    kv.delete(pending_key(mid))
+    writes.append(["DEL", pending_key(mid)])
+    # One transaction: the ratings, the history and the match either all land
+    # or none do, and no page renders a ladder with half a match on it.
+    kv.pipeline(writes, atomic=True)
     return blob
+
+
+def match_writes(blob):
+    """The commands that store a match: the match itself, and its undo snapshot
+    under its own key. Shared with rerate, which rewrites both."""
+    body = {k: v for k, v in blob.items() if k != "snapshot"}
+    cmds = [["SET", match_key(blob["id"]), json.dumps(body)]]
+    if blob.get("snapshot"):
+        cmds.append(["SET", snap_key(blob["id"]), json.dumps(blob["snapshot"])])
+    return cmds
 
 
 def _advance_split(player, rated, mine, theirs, uid, mid, now, prefix):
@@ -450,8 +487,14 @@ def _advance(player, rated, mine, theirs, uid, mid, now):
 # --- history and undo ------------------------------------------------------
 
 def get_match(mid):
-    raw = kv.get(match_key(mid))
-    return json.loads(raw) if raw else None
+    """One match, with its undo snapshot back in place."""
+    raw, snap = kv.mget([match_key(mid), snap_key(mid)])
+    if not raw:
+        return None
+    blob = json.loads(raw)
+    if snap and "snapshot" not in blob:
+        blob["snapshot"] = json.loads(snap)
+    return blob
 
 
 def match_count():
@@ -463,7 +506,7 @@ def match_count():
     the figure out instead of printing a zero that isn't true.
     """
     try:
-        return len(kv.lrange(HISTORY_KEY, 0, HISTORY_LIMIT - 1) or [])
+        return min(kv.llen(HISTORY_KEY), HISTORY_LIMIT)
     except Exception:
         return None
 
@@ -472,11 +515,29 @@ def recent_matches(limit=10, uid=None):
     """The last `limit` applied matches, newest first — the whole ladder's, or
     one player's."""
     key = player_history_key(uid) if uid else HISTORY_KEY
-    ids = kv.lrange(key, 0, max(0, limit - 1))
+    return matches_for(kv.lrange(key, 0, max(0, limit - 1)))
+
+
+def histories(uids, limit=10):
+    """{uid: their last `limit` matches} for several players in two round
+    trips, each match fetched once however many of them played in it."""
+    uids = list(dict.fromkeys(u for u in uids if u))
+    if not uids:
+        return {}
+    lists = kv.pipeline([["LRANGE", player_history_key(u), 0, max(0, limit - 1)]
+                         for u in uids])
+    ids = list(dict.fromkeys(m for part in lists for m in (part or [])))
+    blobs = {m: json.loads(r) for m, r in zip(ids, kv.mget(match_key(i) for i in ids)) if r}
+    return {u: [blobs[m] for m in (part or []) if m in blobs] for u, part in zip(uids, lists)}
+
+
+def matches_for(ids):
+    """The stored matches for these ids, in order, skipping any that are gone.
+    One MGET, however many there are."""
+    ids = list(ids or [])
     if not ids:
         return []
-    raws = kv.pipeline([["GET", match_key(i)] for i in ids])
-    return [json.loads(r) for r in raws if r]
+    return [json.loads(r) for r in kv.mget(match_key(i) for i in ids) if r]
 
 
 MATCH_CHUNK = 40   # GETs per round trip while walking history for a window
@@ -494,7 +555,7 @@ def matches_in(start, end, uid=None, limit=HISTORY_LIMIT):
     ids = kv.lrange(key, 0, max(0, limit - 1))
     out = []
     for i in range(0, len(ids), MATCH_CHUNK):
-        raws = kv.pipeline([["GET", match_key(m)] for m in ids[i:i + MATCH_CHUNK]])
+        raws = kv.mget(match_key(m) for m in ids[i:i + MATCH_CHUNK])
         for raw in raws:
             if not raw:
                 continue
@@ -521,10 +582,16 @@ def applied_at(blob):
 def last_match_by(uid):
     """The most recent match `uid` logged — what /tt undo acts on. Only their own
     submissions, so undo can't be used to erase someone else's result."""
-    for blob in recent_matches(limit=HISTORY_LIMIT, uid=uid):
-        if blob.get("logged_by") == uid:
-            return blob
+    ids = kv.lrange(player_history_key(uid), 0, HISTORY_LIMIT - 1)
+    # Nearly always the first few, so walk rather than fetch the lot.
+    for i in range(0, len(ids), UNDO_CHUNK):
+        for blob in matches_for(ids[i:i + UNDO_CHUNK]):
+            if blob.get("logged_by") == uid:
+                return blob
     return None
+
+
+UNDO_CHUNK = 10
 
 
 def can_undo(blob):
@@ -545,17 +612,21 @@ def undo_match(blob):
     """Put every player back exactly as they were and forget the match."""
     mid, uids = blob["id"], blob["side_a"] + blob["side_b"]
     wk = blob.get("week") or week_key()
+    snapshot = blob.get("snapshot")
+    if snapshot is None:
+        raw = kv.get(snap_key(mid))
+        snapshot = json.loads(raw) if raw else {}
     cmds = []
     for uid in uids:
-        snap = blob["snapshot"].get(uid)
+        snap = snapshot.get(uid)
         if snap:
             cmds.append(["HSET", player_key(uid)] + _flatten(snap))
         cmds.append(["LREM", player_history_key(uid), 0, mid])
         cmds.append(["HINCRBY", f"{wk}:delta", uid, -int(blob["deltas"].get(uid, 0))])
         cmds.append(["HINCRBY", f"{wk}:played", uid, -1])
     cmds.append(["LREM", HISTORY_KEY, 0, mid])
-    cmds.append(["DEL", match_key(mid), TITLES_KEY])
-    kv.pipeline(cmds)
+    cmds.append(["DEL", match_key(mid), snap_key(mid), TITLES_KEY])
+    kv.pipeline(cmds, atomic=True)
     return blob
 
 
@@ -630,10 +701,17 @@ def chosen_names():
 def names():
     """uid → best available name: what they chose, else what Slack offered."""
     try:
-        merged = kv.hgetall(HANDLES_KEY) or {}
+        handles, chosen = kv.pipeline([["HGETALL", HANDLES_KEY], ["HGETALL", NAMES_KEY]])
     except Exception:
-        merged = {}
-    merged.update(chosen_names())
+        return {}
+    return merge_names(handles, chosen)
+
+
+def merge_names(handles, chosen):
+    """The chosen name wins over the handle. Takes the flat HGETALL replies, so
+    a caller that fetched both in a wider batch gets the same answer."""
+    merged = kv.unflatten(handles)
+    merged.update(kv.unflatten(chosen))
     return merged
 
 
@@ -643,6 +721,11 @@ def names_are_stale(now=None):
         last = kv.get(NAMES_FETCHED_KEY)
     except Exception:
         return False
+    return fetched_is_stale(last, now)
+
+
+def fetched_is_stale(last, now=None):
+    """names_are_stale() for a tt:names:fetched value already read."""
     if not last:
         return True
     try:
@@ -668,7 +751,17 @@ def week_movement(key=None, when=None):
     serverless timeout.
     """
     wk = key or week_key(when)
-    delta, played = kv.pipeline([["HGETALL", f"{wk}:delta"], ["HGETALL", f"{wk}:played"]])
+    delta, played = kv.pipeline(week_reads(wk))
+    return week_from(delta, played)
+
+
+def week_reads(wk=None):
+    """The two reads week_movement() makes, for a caller batching them."""
+    wk = wk or week_key()
+    return [["HGETALL", f"{wk}:delta"], ["HGETALL", f"{wk}:played"]]
+
+
+def week_from(delta, played):
     return _ints(kv.unflatten(delta)), _ints(kv.unflatten(played))
 
 

@@ -61,8 +61,15 @@ def record_many(uids, kind):
 
 def counts():
     """{uid: {kind: n}} — everyone with anything against their name."""
+    return counts_from(kv.hgetall(SHAME_KEY))
+
+
+def counts_from(stored):
+    """counts() for the shame hash already read — a dict or HGETALL's flat reply."""
+    if isinstance(stored, list):
+        stored = kv.unflatten(stored)
     out = {}
-    for field, raw in (kv.hgetall(SHAME_KEY) or {}).items():
+    for field, raw in (stored or {}).items():
         uid, _, kind = str(field).rpartition(":")
         if not uid or kind not in BY_KIND:
             continue
@@ -81,22 +88,22 @@ def score(row):
     return sum(WEIGHTS.get(kind, 1) * n for kind, n in (row or {}).items())
 
 
-def board(limit=10, players=None):
+def board(limit=10, players=None, rows=None):
     """[(uid, row, score)] worst first — the wall itself.
 
     Ties break on uid so two people level don't swap places between refreshes,
-    the same rule the spins table already uses.
+    the same rule the spins table already uses. `rows` is counts() already read.
     """
-    rows = counts()
+    rows = counts() if rows is None else rows
     if players is not None:
         rows = {uid: row for uid, row in rows.items() if uid in players}
     ranked = sorted(rows.items(), key=lambda item: (-score(item[1]), item[0]))
     return [(uid, row, score(row)) for uid, row in ranked[:limit] if score(row)]
 
 
-def total(kind=None):
+def total(kind=None, rows=None):
     """How much friction there has been in all, or of one kind."""
-    rows = counts()
+    rows = counts() if rows is None else rows
     if kind:
         return sum(row.get(kind, 0) for row in rows.values())
     return sum(sum(row.values()) for row in rows.values())

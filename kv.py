@@ -96,15 +96,51 @@ def _command(cmd, timeout=10):
     return _post("", [str(c) for c in cmd], timeout).get("result")
 
 
-def pipeline(cmds, timeout=15):
+def pipeline(cmds, timeout=15, atomic=False):
     """Run several commands in one HTTP round trip; returns a list of results in
-    order. Not a transaction — Upstash runs them sequentially and a failure
+    order.
+
+    By default not a transaction — Upstash runs them sequentially and a failure
     surfaces as an {"error": …} entry, so this is for batching reads and
-    independent writes, never for anything needing atomicity across commands."""
+    independent writes. `atomic=True` sends the same batch to /multi-exec
+    instead: still one round trip, but nothing else can interleave with it and
+    no reader sees half of it. Upstash discards a whole transaction on a syntax
+    or limit problem and answers with one {"error": …} rather than a list; that
+    is raised, because the caller's writes did not happen.
+
+    Pipelining saves round trips, not commands — Upstash bills each command in a
+    pipeline or a transaction separately. See mget() for the case where one
+    command can do the work of many.
+    """
     if not cmds:
         return []
-    body = _post("/pipeline", [[str(c) for c in cmd] for cmd in cmds], timeout)
+    body = _post("/multi-exec" if atomic else "/pipeline",
+                 [[str(c) for c in cmd] for cmd in cmds], timeout)
+    if isinstance(body, dict):
+        raise RuntimeError(f"transaction discarded: {body.get('error')}")
     return [entry.get("result") for entry in body]
+
+
+MGET_CHUNK = 200   # keys per MGET; keeps one reply comfortably small
+
+
+def mget(keys, timeout=15):
+    """GET many keys as one command per MGET_CHUNK keys, in one round trip.
+
+    The difference from pipelined GETs is the bill, not the latency: a
+    pipeline of 120 GETs is 120 billed commands, one MGET of 120 keys is one.
+    Missing keys come back as None, in order, exactly like GET.
+    """
+    keys = list(keys)
+    if not keys:
+        return []
+    chunks = [keys[i:i + MGET_CHUNK] for i in range(0, len(keys), MGET_CHUNK)]
+    if len(chunks) == 1:
+        return _command(["MGET", *chunks[0]], timeout) or []
+    out = []
+    for part in pipeline([["MGET", *chunk] for chunk in chunks], timeout):
+        out += part or []
+    return out
 
 
 # --- strings ---------------------------------------------------------------
@@ -142,6 +178,13 @@ def hset(key, field, value, nx=False):
 
 def hget(key, field):
     return _command(["HGET", key, field])
+
+
+def hmget(key, *fields):
+    """Several fields of one hash in one command; None where a field is unset."""
+    if not fields:
+        return []
+    return _command(["HMGET", key, *fields]) or []
 
 
 def hgetall(key):
@@ -212,6 +255,10 @@ def lpush(key, *values):
 
 def lrange(key, start=0, stop=-1):
     return _command(["LRANGE", key, start, stop]) or []
+
+
+def llen(key):
+    return int(_command(["LLEN", key]) or 0)
 
 
 def ltrim(key, start, stop):

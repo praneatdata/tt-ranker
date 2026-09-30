@@ -23,7 +23,7 @@ class FakeRedis:
     # --- transport ---------------------------------------------------------
 
     def post(self, path, payload, timeout=10):
-        if path == "/pipeline":
+        if path in ("/pipeline", "/multi-exec"):
             return [{"result": self.exec(cmd)} for cmd in payload]
         return {"result": self.exec(payload)}
 
@@ -52,6 +52,9 @@ class FakeRedis:
         if "EX" in opts:
             self.ttl[key] = int(opts[opts.index("EX") + 1])
         return "OK"
+
+    def do_mget(self, *keys):
+        return [self.do_get(k) for k in keys]
 
     def do_incr(self, key):
         value = int(self.data.get(key, 0)) + 1
@@ -96,6 +99,10 @@ class FakeRedis:
 
     def do_hget(self, key, field):
         return self.data.get(key, {}).get(field)
+
+    def do_hmget(self, key, *fields):
+        h = self.data.get(key, {})
+        return [h.get(f) for f in fields]
 
     def do_hgetall(self, key):
         flat = []
@@ -146,6 +153,9 @@ class FakeRedis:
         if stop < 0:
             stop += len(lst)
         return lst[start:stop + 1]
+
+    def do_llen(self, key):
+        return len(self.data.get(key, []))
 
     def do_ltrim(self, key, start, stop):
         lst = self.data.get(key, [])

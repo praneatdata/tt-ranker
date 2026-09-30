@@ -380,7 +380,7 @@ def submit_match(side_a, side_b, games, logged_by, channel, client, bot_id=None,
         return post_failure(e, channel, bot_id) + " Then log it again."
 
     dms = _send_verdict_dms(record, client, logger=logger)
-    store.attach_messages(record["id"], resp["channel"], resp["ts"], dms)
+    store.attach_messages(record["id"], resp["channel"], resp["ts"], dms, record=record)
     if not any(role == "confirm" for uid, role in verdict_audience(record).items()
                if uid in dms):
         # Nobody who could confirm actually received the buttons. Say so rather
@@ -819,7 +819,7 @@ def ladder_url():
 def unnamed_players():
     """Registered players who haven't chosen a name — who `/tt nudge` asks."""
     chosen = store.chosen_names()
-    return sorted(uid for uid in store.all_players() if uid not in chosen)
+    return sorted(uid for uid in store.player_ids() if uid not in chosen)
 
 
 def handle_nudge(command, respond, client, logger=None):
@@ -878,7 +878,7 @@ def handle_who(command, respond, bot_id=None):
     """
     _, rest = parsing.split_subcommand(command.get("text", ""))
     names = store.names()
-    known = list(store.all_players())
+    known = store.player_ids()
 
     mentioned = parsing.mentions_in(rest, exclude=bot_id)
     if mentioned:
@@ -1161,7 +1161,9 @@ def handle_me(command, respond, bot_id=None):
     _, rest = parsing.split_subcommand(command.get("text", ""))
     mentioned = parsing.mentions_in(rest, exclude=bot_id)
     uid = mentioned[0] if mentioned else command["user_id"]
-    player = store.get_player(uid)
+    # Everyone, once: the rank needs the whole ladder anyway.
+    players = store.all_players()
+    player = players.get(uid)
     if not player:
         respond(f":grey_question: <@{uid}> isn't on the ladder yet — "
                 "`/tt register`, or just play a match and I'll add them.")
@@ -1170,7 +1172,7 @@ def handle_me(command, respond, bot_id=None):
     played = elo.games_played(player)
     decided = player["wins"] + player["losses"]
     rate = f" ({round(100 * player['wins'] / decided)}%)" if decided else ""
-    rank, total = _rank_of(uid)
+    rank, total = _rank_of(uid, players)
     singles = store.singles_view(player)
     singles_games = elo.games_played(singles)
     doubles = store.doubles_view(player)
@@ -1211,9 +1213,9 @@ def handle_me(command, respond, bot_id=None):
     respond("\n".join(lines))
 
 
-def _rank_of(uid):
+def _rank_of(uid, players=None):
     """(rank, ladder size) for a placed player, else (None, size)."""
-    ranked = ranked_players(store.all_players())
+    ranked = ranked_players(store.all_players() if players is None else players)
     for i, (u, _) in enumerate(ranked, start=1):
         if u == uid:
             return i, len(ranked)
@@ -1732,14 +1734,22 @@ def help_text(uid=None):
 
 # --- routing ---------------------------------------------------------------
 
-def refresh_names(client, logger=None):
+_UNREAD = object()
+
+
+def refresh_names(client, logger=None, fetched=_UNREAD):
     """Top up the uid → display name map the web ladder reads from.
 
     Needs `users:read`. Without it this is a no-op and the page falls back to
     whatever names slash commands have happened to reveal, so the scope is worth
     having but never required.
+
+    `fetched` is the tt:names:fetched value, for a caller that already read it
+    alongside everything else a page needs.
     """
-    if not store.names_are_stale():
+    stale = (store.names_are_stale() if fetched is _UNREAD
+             else store.fetched_is_stale(fetched))
+    if not stale:
         return 0
     found, cursor = {}, None
     try:
@@ -1978,7 +1988,7 @@ def fixture_blocks(record, now=None):
 
     if state in ("open", "closed"):
         blocks.append(_section(pool_line(record, pot)))
-        against = betting.backing_against_self(record)
+        against = betting.backing_against_self(record, pot["bets"])
         if against:
             # Allowed by house rule. The guard is that everyone can see it.
             who = ", ".join(f"<@{u}> ({fmt_spins(n)})" for u, n in against)
@@ -2336,8 +2346,9 @@ def handle_cancel_fixture(body, client, respond, logger=None):
     if not betting.claim(sid):
         _only_you(respond, ":information_source: That one is already settled.")
         return
-    refunded = betting.pool(sid)["total"]
-    betting.void(record, f"called off by <@{user}>")
+    placed = betting.bets(sid)
+    refunded = betting.pool_from(placed)["total"]
+    betting.void(record, f"called off by <@{user}>", placed=placed)
     shame.record(user, "bailed")
     blocks = [
         _section(f":no_entry_sign: ~{fmt_side(record['side_a'])} vs "
@@ -2886,8 +2897,9 @@ def handle_shame(command, respond):
             return
         respond(f":wastebasket: <@{uid}> — {shame.summary(row)}.")
         return
-    respond(shame_text(shame.board(limit=SHAME_SHOWN), store.names(),
-                       shame.total()))
+    rows = shame.counts()
+    respond(shame_text(shame.board(limit=SHAME_SHOWN, rows=rows), store.names(),
+                       shame.total(rows=rows)))
 
 
 def handle_challenges(command, respond):
@@ -3133,16 +3145,23 @@ def settle_fixture_for(blob, client, now=None, logger=None):
         return None
     winner = betting.winner_from(record, blob["side_a"], blob["games_a"], blob["games_b"])
     pot = betting.pool(record["id"])
-    settled = betting.settle(record, winner, match_id=blob["id"], now=now)
+    settled = betting.settle(record, winner, match_id=blob["id"], now=now,
+                             placed=pot["bets"])
     _refresh_with(settled, client, settled_fixture_blocks(settled, pot),
                   "Fixture settled.", logger=logger)
-    for uid, paid in (settled.get("payouts") or {}).items():
+    payouts = settled.get("payouts") or {}
+    # Every bettor's balance for their DM in one read, not one per person.
+    held = betting.balances_of(list(payouts))
+    for uid, paid in payouts.items():
         staked = (settled.get("staked") or {}).get(uid, 0)
-        _dm(client, uid, _settlement_note(settled, uid, staked, paid), logger=logger)
+        _dm(client, uid, _settlement_note(settled, uid, staked, paid, held.get(uid)),
+            logger=logger)
     return settled
 
 
-def _settlement_note(record, uid, staked, paid):
+def _settlement_note(record, uid, staked, paid, held=None):
+    if held is None:
+        held = betting.balance(uid)
     net = paid - staked
     head = f"Fixture `#{record['id']}` settled."
     if record["winner"] == "draw":
@@ -3150,13 +3169,13 @@ def _settlement_note(record, uid, staked, paid):
                 "came back.")
     if not paid:
         return (f":chart_with_downwards_trend: {head} Your {fmt_spins(staked)} "
-                f"went to the other side. Balance: *{fmt_spins(betting.balance(uid))}*.")
+                f"went to the other side. Balance: *{fmt_spins(held)}*.")
     if net == 0:
         return (f":moneybag: {head} Nobody backed the winner, so your "
                 f"{fmt_spins(staked)} came back.")
     return (f":tada: {head} You staked {fmt_spins(staked)} and took back "
             f"*{fmt_spins(paid)}* — up {fmt_spins(net)}. "
-            f"Balance: *{fmt_spins(betting.balance(uid))}*.")
+            f"Balance: *{fmt_spins(held)}*.")
 
 
 def settled_fixture_blocks(record, pot):
@@ -3263,10 +3282,16 @@ def handle_transfer(command, respond, client=None, bot_id=None, logger=None):
 
 def handle_wallet(command, respond):
     uid = command["user_id"]
-    betting.ensure_wallets([uid])
-    held = betting.balance(uid)
+    # Open the wallet and read everything the card shows in one trip.
+    _, raw_ledger, members, raw_wallets = kv.pipeline([
+        ["HSETNX", betting.WALLET_KEY, uid, betting.START_SPINS],
+        ["LRANGE", betting.ledger_key(uid), 0, 5],
+        ["SMEMBERS", store.PLAYERS_KEY],
+        ["HGETALL", betting.WALLET_KEY]])
+    wallets = betting.balances_from(raw_wallets)
+    held = wallets.get(uid, betting.START_SPINS)
     lines = [f":moneybag: You have *{fmt_spins(held)}*."]
-    entries = betting.ledger(uid, limit=6)
+    entries = betting.ledger_from(raw_ledger)
     if entries:
         lines.append("")
         for entry in entries:
@@ -3278,7 +3303,7 @@ def handle_wallet(command, respond):
                    if betting.WEEKLY_STIPEND > 0 else "")
         lines.append(f"_Everyone starts with {fmt_spins(betting.START_SPINS)}"
                      f"{stipend}._")
-    rank, size = wallet_rank_of(uid)
+    rank, size = wallet_rank_of(uid, betting.rank_wallets(wallets, members or []))
     if rank and size > 1:
         lines.append(f"\n_#{rank} of {size} wallets · `/tt rich` for the table · "
                      "`/tt book` for what's open to bet on._")
@@ -3290,9 +3315,9 @@ def handle_wallet(command, respond):
 RICH_LIMIT = 20
 
 
-def wallet_rank_of(uid):
+def wallet_rank_of(uid, ranked=None):
     """(rank, wallets) for one player on the spins table."""
-    ranked = betting.standings(store.player_ids())
+    ranked = betting.standings(store.player_ids()) if ranked is None else ranked
     for i, (u, _, _) in enumerate(ranked, start=1):
         if u == uid:
             return i, len(ranked)
@@ -3367,7 +3392,7 @@ def handle_book(command, respond):
     respond(book_text(records, betting.balance(command["user_id"])))
 
 
-def book_text(records, balance=None, now=None):
+def book_text(records, balance=None, now=None, pools=None):
     """The book, split by what you can actually do about each one.
 
     Betting on a fixture and logging the result of one are different jobs, and a
@@ -3375,13 +3400,15 @@ def book_text(records, balance=None, now=None):
     matches ended up sitting on other people's money with nobody noticing.
     """
     now = now or store.now_ist()
+    if pools is None:
+        pools = betting.pools_for([r["id"] for r in records])
     taking = [r for r in records if r.get("state") == "open"]
     waiting = sorted((r for r in records if r.get("state") == "closed"),
                      key=lambda r: r.get("starts_at") or "")
     lines = [":date: *The book*"]
 
     def row(record, tail=""):
-        pot = betting.pool(record["id"])["total"]
+        pot = (pools.get(record["id"]) or betting.pool(record["id"]))["total"]
         return (f"`#{record['id']}`  {fmt_side(record['side_a'])} vs "
                 f"{fmt_side(record['side_b'])} · {fmt_when(record, now)} · "
                 + (f"{fmt_spins(pot)} in the pot" if pot else "nothing staked yet")

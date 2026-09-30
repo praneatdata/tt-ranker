@@ -99,12 +99,35 @@ def balance(uid):
 
 
 def balances():
+    return balances_from(kv.hgetall(WALLET_KEY))
+
+
+def balances_from(raw):
+    """{uid: spins} from the wallet hash — already a dict, or HGETALL's flat
+    reply when a caller fetched it in a wider batch."""
+    if isinstance(raw, list):
+        raw = kv.unflatten(raw)
     out = {}
-    for uid, raw in (kv.hgetall(WALLET_KEY) or {}).items():
+    for uid, value in (raw or {}).items():
+        try:
+            out[uid] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def balances_of(uids):
+    """{uid: spins} for just these people, in one command. Anyone without a
+    wallet reads as START_SPINS, the way balance() reads them."""
+    uids = list(dict.fromkeys(u for u in uids if u))
+    if not uids:
+        return {}
+    out = {}
+    for uid, raw in zip(uids, kv.hmget(WALLET_KEY, *uids)):
         try:
             out[uid] = int(raw)
         except (TypeError, ValueError):
-            continue
+            out[uid] = START_SPINS
     return out
 
 
@@ -128,7 +151,7 @@ def rank_wallets(held, uids=None):
     return [(uid, spins, spins - START_SPINS) for uid, spins in ranked]
 
 
-def circulating(uids=None):
+def circulating(uids=None, held=None, pools=None):
     """Every spin in existence: in wallets, plus whatever is staked on a fixture
     that has not settled.
 
@@ -138,29 +161,62 @@ def circulating(uids=None):
 
     Fills in anyone in `uids` without a wallet at START_SPINS, the same way
     standings() does, so the total and the table it sits under agree.
+
+    `held` and `pools` let a caller that already read the wallets and the live
+    pots pass them in rather than have them read again.
     """
-    held = {u: START_SPINS for u in (uids or []) if u}
-    held.update(balances() or {})
-    return sum(held.values()) + sum(pool(r["id"])["total"] for r in live())
+    table = {u: START_SPINS for u in (uids or []) if u}
+    table.update(balances() if held is None else held)
+    if pools is None:
+        pools = pools_for([r["id"] for r in live()])
+    return sum(table.values()) + sum(p["total"] for p in pools.values())
 
 
 def adjust(uid, amount, reason, now=None):
     """Move a wallet and note why. Returns the new balance."""
-    ensure_wallets([uid])
-    new = int(kv.hincrby(WALLET_KEY, uid, int(amount)))
-    entry = json.dumps({"at": store.stamp(now), "delta": int(amount),
-                        "reason": reason, "balance": new})
+    return adjust_many([(uid, amount, reason)], now)[0]
+
+
+def adjust_many(changes, now=None):
+    """Move several wallets — [(uid, amount, reason)] — and note each one.
+    Returns the new balances, in the order given.
+
+    Two round trips however many wallets move: one to open any missing wallet
+    and apply every change, one for the ledger lines, which need the balances
+    the first one returned. Each change is still its own HINCRBY, so a
+    concurrent stake or payout can't be lost the way read-modify-write would.
+    """
+    changes = [(uid, int(amount), reason) for uid, amount, reason in changes if uid]
+    if not changes:
+        return []
+    moves = []
+    for uid, amount, _ in changes:
+        moves += [["HSETNX", WALLET_KEY, uid, START_SPINS],
+                  ["HINCRBY", WALLET_KEY, uid, amount]]
+    results = kv.pipeline(moves)
+    new = [int(results[2 * i + 1]) for i in range(len(changes))]
+    at = store.stamp(now)
+    ledger = []
+    for (uid, amount, reason), balance_now in zip(changes, new):
+        entry = json.dumps({"at": at, "delta": amount, "reason": reason,
+                            "balance": balance_now})
+        ledger += [["LPUSH", ledger_key(uid), entry],
+                   ["LTRIM", ledger_key(uid), 0, LEDGER_LIMIT - 1]]
     try:
-        kv.pipeline([["LPUSH", ledger_key(uid), entry],
-                     ["LTRIM", ledger_key(uid), 0, LEDGER_LIMIT - 1]])
+        kv.pipeline(ledger)
     except Exception:
         pass  # the ledger is a courtesy; the balance is the truth
     return new
 
 
 def ledger(uid, limit=10):
+    return ledger_from(kv.lrange(ledger_key(uid), 0, max(0, limit - 1)))
+
+
+def ledger_from(raws):
+    """ledger() for the list already read."""
     out = []
-    for raw in kv.lrange(ledger_key(uid), 0, max(0, limit - 1)):
+    for raw in raws or []:
         try:
             out.append(json.loads(raw))
         except ValueError:
@@ -194,8 +250,8 @@ def transfer(sender, recipient, amount, by=None, now=None):
     # Named both ways in the ledger, and marked when a third party moved it, so
     # /tt wallet can always answer "where did that come from".
     hand = f" by <@{by}>" if by and by not in (sender, recipient) else ""
-    adjust(sender, -amount, f"sent to <@{recipient}>{hand}", now)
-    adjust(recipient, amount, f"from <@{sender}>{hand}", now)
+    adjust_many([(sender, -amount, f"sent to <@{recipient}>{hand}"),
+                 (recipient, amount, f"from <@{sender}>{hand}")], now)
     return True, (f"Moved *{amount:,} {CURRENCY}* from <@{sender}> to "
                   f"<@{recipient}>.")
 
@@ -236,9 +292,7 @@ def pay_prize(blob, now=None):
     winners = winners_of(blob)
     if not (amount and winners):
         return {}
-    ensure_wallets(winners)
-    for uid in winners:
-        adjust(uid, amount, f"won a match ({label})", now)
+    adjust_many([(uid, amount, f"won a match ({label})") for uid in winners], now)
     return {uid: amount for uid in winners}
 
 
@@ -249,8 +303,7 @@ def take_back_prize(blob, now=None):
     winners = winners_of(blob)
     if not (amount and winners):
         return {}
-    for uid in winners:
-        adjust(uid, -amount, f"match undone ({label})", now)
+    adjust_many([(uid, -amount, f"match undone ({label})") for uid in winners], now)
     return {uid: -amount for uid in winners}
 
 
@@ -264,13 +317,11 @@ def pay_stipend(week=None, now=None):
         return {"status": "disabled", "week": week}
     if kv.sadd(STIPEND_KEY, week) != 1:
         return {"status": "already_paid", "week": week}
-    players = list(store.all_players())
+    players = store.player_ids()
     if not players:
         kv.srem(STIPEND_KEY, week)  # nothing to pay; let a later run try
         return {"status": "no_players", "week": week}
-    ensure_wallets(players)
-    for uid in players:
-        adjust(uid, WEEKLY_STIPEND, "weekly stipend", now)
+    adjust_many([(uid, WEEKLY_STIPEND, "weekly stipend") for uid in players], now)
     return {"status": "paid", "week": week, "players": len(players),
             "each": WEEKLY_STIPEND}
 
@@ -310,9 +361,15 @@ def live():
     """Every match not yet settled or voided, oldest first. Ids whose JSON has
     expired drop out of the index on the way past."""
     ids = sorted(kv.smembers(LIVE_KEY), key=lambda s: int(s) if s.isdigit() else 0)
+    return live_from(ids)
+
+
+def live_from(ids):
+    """live() for the members of the live index, already read."""
+    ids = sorted(ids or [], key=lambda s: int(s) if str(s).isdigit() else 0)
     if not ids:
         return []
-    raws = kv.pipeline([["GET", sched_key(i)] for i in ids])
+    raws = kv.mget(sched_key(i) for i in ids)
     out, stale = [], []
     for sid, raw in zip(ids, raws):
         (out if raw else stale).append(json.loads(raw) if raw else sid)
@@ -406,8 +463,15 @@ def is_abandoned(record, now=None, hours=ABANDON_HOURS):
 
 def bets(sid):
     """{uid: (side, amount)} for one match."""
+    return bets_from(kv.hgetall(bets_key(sid)))
+
+
+def bets_from(stored):
+    """bets() for a bets hash already read — a dict, or HGETALL's flat reply."""
+    if isinstance(stored, list):
+        stored = kv.unflatten(stored)
     out = {}
-    for uid, raw in (kv.hgetall(bets_key(sid)) or {}).items():
+    for uid, raw in (stored or {}).items():
         side, _, amount = str(raw).partition(":")
         try:
             out[uid] = (side, int(amount))
@@ -418,7 +482,20 @@ def bets(sid):
 
 def pool(sid):
     """The pot, split by side, plus how many people are on each."""
-    placed = bets(sid)
+    return pool_from(bets(sid))
+
+
+def pools_for(sids):
+    """{sid: pool} for several fixtures in one round trip."""
+    sids = list(dict.fromkeys(sids))
+    if not sids:
+        return {}
+    raws = kv.pipeline([["HGETALL", bets_key(sid)] for sid in sids])
+    return {sid: pool_from(bets_from(raw)) for sid, raw in zip(sids, raws)}
+
+
+def pool_from(placed):
+    """pool() for bets already read."""
     totals = {"a": 0, "b": 0}
     backers = {"a": 0, "b": 0}
     for side, amount in placed.values():
@@ -459,12 +536,18 @@ def place_bet(record, uid, side, amount, now=None):
     if amount < MIN_BET:
         return False, f"Smallest stake is {MIN_BET} {CURRENCY}."
 
-    ensure_wallets([uid])
-    existing = bets(record["id"]).get(uid)
+    # Open the wallet, read their stake so far and what they hold: one trip.
+    _, placed_raw, held_raw = kv.pipeline([["HSETNX", WALLET_KEY, uid, START_SPINS],
+                                          ["HGET", bets_key(record["id"]), uid],
+                                          ["HGET", WALLET_KEY, uid]])
+    existing = bets_from({uid: placed_raw} if placed_raw else {}).get(uid)
     if existing and existing[0] != side:
         return False, (f"You're already on the other side of `#{record['id']}` "
                        f"for {existing[1]} {CURRENCY}. Pick one.")
-    held = balance(uid)
+    try:
+        held = int(held_raw)
+    except (TypeError, ValueError):
+        held = START_SPINS
     if amount > held:
         return False, f"You have {held} {CURRENCY}."
 
@@ -476,13 +559,13 @@ def place_bet(record, uid, side, amount, now=None):
                   f"you're in for {staked}.")
 
 
-def backing_against_self(record):
+def backing_against_self(record, placed=None):
     """Players who staked on the side they aren't playing for.
 
     Allowed by house rule, so the guard is visibility: the match message names
     them, and everyone can draw their own conclusions.
     """
-    placed = bets(record["id"])
+    placed = bets(record["id"]) if placed is None else placed
     out = []
     for uid, (side, amount) in placed.items():
         mine = "a" if uid in record["side_a"] else ("b" if uid in record["side_b"] else None)
@@ -524,13 +607,15 @@ def claim(sid):
     return kv.srem(LIVE_KEY, sid) == 1
 
 
-def settle(record, winner, match_id="", now=None):
-    """Pay out a decided match. The caller must have won claim() first."""
-    placed = bets(record["id"])
+def settle(record, winner, match_id="", now=None, placed=None):
+    """Pay out a decided match. The caller must have won claim() first.
+
+    `placed` is the bets as the caller already read them, after its claim —
+    nothing can be staked on a claimed match, so they can't have moved."""
+    placed = bets(record["id"]) if placed is None else placed
     paid = payouts(placed, winner)
-    for uid, amount in paid.items():
-        if amount:
-            adjust(uid, amount, f"#{record['id']} settled", now)
+    adjust_many([(uid, amount, f"#{record['id']} settled")
+                 for uid, amount in paid.items() if amount], now)
     record.update({"state": "settled", "winner": winner,
                    "settled_at": store.stamp(now), "match_id": match_id or "",
                    "payouts": paid, "staked": {u: a for u, (_, a) in placed.items()}})
@@ -538,11 +623,11 @@ def settle(record, winner, match_id="", now=None):
     return record
 
 
-def void(record, reason="", now=None):
-    """Call it off and hand every stake back."""
-    placed = bets(record["id"])
-    for uid, (_, amount) in placed.items():
-        adjust(uid, amount, f"#{record['id']} refunded", now)
+def void(record, reason="", now=None, placed=None):
+    """Call it off and hand every stake back. `placed` as for settle()."""
+    placed = bets(record["id"]) if placed is None else placed
+    adjust_many([(uid, amount, f"#{record['id']} refunded")
+                 for uid, (_, amount) in placed.items()], now)
     record.update({"state": "void", "voided_at": store.stamp(now),
                    "reason": reason, "refunds": {u: a for u, (_, a) in placed.items()}})
     save(record)

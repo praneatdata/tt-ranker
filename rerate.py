@@ -26,9 +26,14 @@ def load_history():
     """Every stored match, oldest application first, plus any ids we've lost."""
     ids = kv.lrange(store.HISTORY_KEY, 0, -1)
     blobs, missing = [], []
-    for mid in ids:
-        blob = store.get_match(mid)
-        (blobs if blob else missing).append(blob or mid)
+    # All of history in one round trip rather than one per match: /tt edit runs
+    # this for the preview and again on apply, inside a Slack interaction. The
+    # undo snapshots aren't fetched — replay() rebuilds every one of them.
+    for mid, raw in zip(ids, kv.mget(store.match_key(m) for m in ids)):
+        if raw:
+            blobs.append(json.loads(raw))
+        else:
+            missing.append(mid)
     blobs.sort(key=lambda b: (b.get("applied_at", ""), int(b.get("id", 0) or 0)))
     return blobs, missing
 
@@ -113,7 +118,7 @@ def write(state, rewritten, weekly, before=None):
         player["joined"] = (before.get(uid) or {}).get("joined") or player["joined"]
         writes.append(["HSET", store.player_key(uid)] + store._flatten(player))
     for blob in rewritten:
-        writes.append(["SET", store.match_key(blob["id"]), json.dumps(blob)])
+        writes += store.match_writes(blob)
 
     # Weekly counters are rebuilt, not adjusted: clearing first is the only way
     # to be sure a stale week isn't left behind to be added to.
@@ -234,7 +239,7 @@ def commit_edit(plan, state, rewritten, weekly):
     cmds = []
     if plan["void"]:
         mid = plan["id"]
-        cmds.append(["DEL", store.match_key(mid)])
+        cmds.append(["DEL", store.match_key(mid), store.snap_key(mid)])
         cmds.append(["LREM", store.HISTORY_KEY, 0, mid])
         for uid in plan["before"]["side_a"] + plan["before"]["side_b"]:
             cmds.append(["LREM", store.player_history_key(uid), 0, mid])

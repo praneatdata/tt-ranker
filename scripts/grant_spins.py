@@ -47,8 +47,8 @@ def main(argv):
         return 0
 
     staked = {}
-    for record in betting.live():
-        for uid, (_, amount) in betting.bets(record["id"]).items():
+    for pot in betting.pools_for([r["id"] for r in betting.live()]).values():
+        for uid, (_, amount) in pot["bets"].items():
             staked[uid] = staked.get(uid, 0) + amount
 
     print(f"{len(held)} wallets, {each:+} spins each "
@@ -60,8 +60,7 @@ def main(argv):
     if "--yes" not in argv:
         print("\nDry run. Nothing changed. Re-run with --yes.")
         return 0
-    for uid in held:
-        betting.adjust(uid, each, "opening balance raised")
+    betting.adjust_many([(uid, each, "opening balance raised") for uid in held])
     print(f"\nTopped up {len(held)} wallets. Anything staked in an open fixture "
           "still settles as it was.")
     return 0

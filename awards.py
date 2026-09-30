@@ -135,21 +135,45 @@ def compute(players, week_matches, wallets=None):
     return {key: uid for key, uid in held.items() if uid}
 
 
-def current(now=None, fresh=False):
-    """The live table, from cache when it is warm. {title key: uid}."""
+_UNREAD = object()
+
+
+def current(now=None, fresh=False, cached=_UNREAD, players=None, wallets=None,
+            history=None):
+    """The live table, from cache when it is warm. {title key: uid}.
+
+    A page has usually read most of what a cold cache needs already, and the
+    cache goes cold after every confirmed match and every CACHE_SECONDS. So it
+    can hand over what it holds: `cached` (the raw tt:titles value, None when
+    it was empty), `players`, `wallets`, and `history` — recent matches newest
+    first, used for the week whenever it reaches back past the week's start.
+    Anything not handed over is read here, as before.
+    """
     if not fresh:
-        cached = kv.get(store.TITLES_KEY)
+        if cached is _UNREAD:
+            cached = kv.get(store.TITLES_KEY)
         if cached:
             try:
                 return json.loads(cached)
             except ValueError:      # a half-written cache is not worth a 500
                 pass
     start, end = week_window(now)
-    table = compute(store.all_players(),
-                    store.matches_in(start, end),
-                    betting.balances())
+    week = _week_from(history, start, end)
+    table = compute(store.all_players() if players is None else players,
+                    store.matches_in(start, end) if week is None else week,
+                    betting.balances() if wallets is None else wallets)
     kv.set_(store.TITLES_KEY, json.dumps(table), ex=CACHE_SECONDS)
     return table
+
+
+def _week_from(history, start, end):
+    """The week's matches out of recent history, or None if that history
+    doesn't reach back far enough to be sure it holds all of them."""
+    stamped = [(store.applied_at(b), b) for b in history or ()]
+    stamped = [(when, b) for when, b in stamped if when is not None]
+    if not stamped or stamped[-1][0] >= start:
+        return None
+    return [b for when, b in stamped if start <= when < end]
 
 
 def by_player(table):

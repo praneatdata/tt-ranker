@@ -149,8 +149,12 @@ def _filtered_matches(players, history=()):
 
 HTML = {"Content-Type": "text/html; charset=utf-8"}
 # Long enough that a channel-wide click isn't a thundering herd, short enough
-# that the page still reads as live.
-CACHE = dict(HTML, **{"Cache-Control": "public, max-age=15, stale-while-revalidate=60"})
+# that the page still reads as live. s-maxage is what makes that true: Vercel's
+# CDN only caches a function's response when Cache-Control carries it, so with
+# max-age alone every one of those clicks ran the function and read Redis in
+# full. max-age stays for the browser.
+CACHE = dict(HTML, **{"Cache-Control":
+                      "public, max-age=15, s-maxage=15, stale-while-revalidate=60"})
 
 
 def _view():
@@ -176,24 +180,40 @@ def _for_view(players, view):
             "doubles": store.doubles_players}.get(view, lambda p: p)(players)
 
 
-def _common():
-    """What every page wants: the players, the names, and how fresh this is."""
+def _common(**wants):
+    """What every page wants — the players, the names, and how fresh this is —
+    plus whatever else the page asks prefetch.load() for, read together in two
+    round trips. Returns (common, data): the keywords every render takes, and
+    the rest of what was read."""
     import bot
+    import prefetch
     import store
+    data = prefetch.load(**wants)
     try:
         # Opportunistic and best-effort: if users:read isn't granted this is a
-        # no-op and pages fall back to names slash commands have revealed.
-        if _init_error is None:
-            bot.refresh_names(bolt_app.client, logger=log)
+        # no-op and pages fall back to names slash commands have revealed. When
+        # it did top the names up, render with those rather than the set read a
+        # moment before.
+        if _init_error is None and bot.refresh_names(bolt_app.client, logger=log,
+                                                     fetched=data.fetched):
+            data.names = store.names()
     except Exception:
         log.exception("name refresh failed; rendering with what we have")
-    return {"players": store.all_players(), "names": store.names(),
+    return {"players": data.players, "names": data.names,
             "channel_hint": os.environ.get("TT_CHANNEL_NAME", ""),
             "updated": store.now_ist().strftime("%H:%M IST"),
-            "log_href": _log_href()}
+            "log_href": _log_href()}, data
 
 
-def _titles():
+def _table(data):
+    """The title table, from what the page already read wherever it can."""
+    import awards
+    return awards.current(cached=data.titles,
+                          players=data.players if data.has_players else None,
+                          wallets=data.wallets, history=data.ladder_history)
+
+
+def _titles(data):
     """Who is wearing what — awards.by_player()'s map, off the cached table.
 
     Never fatal. A page without its chips is still the page, and a title is not
@@ -201,7 +221,7 @@ def _titles():
     """
     try:
         import awards
-        return awards.by_player(awards.current())
+        return awards.by_player(_table(data))
     except Exception:
         log.exception("titles unavailable; rendering without them")
         return {}
@@ -219,11 +239,7 @@ def _render_matches():
     import store
     from web.pages import matches as page_matches
 
-    common = _common()
-    players = common.pop("players")
-    player = request.args.get("player", "")
-    if player not in players:
-        player = ""
+    asked = request.args.get("player", "")
     fmt = request.args.get("format", "")
     if fmt not in ("singles", "doubles"):
         fmt = ""
@@ -235,11 +251,21 @@ def _render_matches():
     if not window:
         day = ""
 
+    # The list the page will most likely show comes in with everything else.
+    # The asked-for player is only validated once the ladder is read, so a bad
+    # link costs an extra read rather than a wrong list.
+    wants = {} if window else (
+        {"history": HISTORY_WINDOW, "uid": asked} if asked
+        else {"history": HISTORY_WINDOW, "count": True})
+    common, data = _common(**wants)
+    players = common.pop("players")
+    player = asked if asked in players else ""
+
     if window:
         label, start, end = window
         found = store.matches_in(start, end, uid=player or None)
-    elif player:
-        found = store.recent_matches(limit=HISTORY_WINDOW, uid=player)
+    elif player or not asked:
+        found = data.history
     else:
         found = store.recent_matches(limit=HISTORY_WINDOW)
     if fmt:
@@ -257,8 +283,9 @@ def _render_matches():
         found, players, params=params,
         iso=parsing.iso_day(day, store.now_ist()) if day else "",
         now=store.now_ist(),
-        total=store.match_count() if not (player or day or fmt or query) else None,
-        titles=_titles(), **common)
+        total=(data.match_count if data.match_count is not None else store.match_count())
+        if not (player or day or fmt or query) else None,
+        titles=_titles(data), **common)
     return body, 200, CACHE
 
 
@@ -267,18 +294,18 @@ def _render_players():
     import store
     from web.pages import players as page_players
 
-    common = _common()
+    common, data = _common(history=HISTORY_WINDOW, week=True)
     players = common.pop("players")
     view = _view()
-    week_delta, week_played = store.week_movement()
+    week_delta, week_played = data.week_delta, data.week_played
     body = page_players.render(
-        _for_view(players, view), history=store.recent_matches(limit=HISTORY_WINDOW),
+        _for_view(players, view), history=data.history,
         week=store.week_key(), view=view, placement_games=_placement(view),
         week_delta=week_delta, week_played=week_played,
         query=(request.args.get("q", "") or "").strip()[:40],
         comparing=request.args.get("compare") == "1",
         compare=_picked(_for_view(players, view)),
-        slots=_slots(), titles=_titles(), **common)
+        slots=_slots(), titles=_titles(data), **common)
     return body, 200, CACHE
 
 
@@ -300,12 +327,12 @@ def _render_profile(uid):
     from web.pages import errors
     from web.pages import profile as page_profile
 
-    common = _common()
+    view = _view()
+    common, data = _common(history=HISTORY_WINDOW, uid=uid, week=view == "overall")
     players = common.pop("players")
     if uid not in players:
         return errors.not_found("player"), 404, HTML
 
-    view = _view()
     shown = _for_view(players, view)
     placement = _placement(view)
     ranked = sorted(((u, p) for u, p in shown.items()
@@ -313,11 +340,10 @@ def _render_profile(uid):
                     key=lambda i: (-i[1]["rating"], -elo.games_played(i[1]), i[0]))
     rank = next((i for i, (u, _) in enumerate(ranked, 1) if u == uid), None)
 
-    history = store.recent_matches(limit=HISTORY_WINDOW, uid=uid)
+    history = data.history
     week = store.week_key()
     if view == "overall":
-        week_delta, week_played = store.week_movement()
-        delta, played = week_delta.get(uid, 0), week_played.get(uid, 0)
+        delta, played = data.week_delta.get(uid, 0), data.week_played.get(uid, 0)
         known = True
     else:
         from web import derive
@@ -331,7 +357,7 @@ def _render_profile(uid):
     body = page_profile.render(
         uid, shown[uid], shown, history=history, week=week, view=view,
         placement_games=placement, rank=rank, delta=delta, played=played,
-        known=known, versus=versus, titles=_titles(), now=store.now_ist(),
+        known=known, versus=versus, titles=_titles(data), now=store.now_ist(),
         **common)
     return body, 200, CACHE
 
@@ -360,7 +386,7 @@ def _render_compare():
     import store
     from web.pages import compare as page_compare
 
-    common = _common()
+    common, data = _common()
     players = common.pop("players")
     view = _view()
     shown = _for_view(players, view)
@@ -375,9 +401,11 @@ def _render_compare():
     if len(uids) > 1:
         # Every player's history, merged: a match between two of them appears in
         # both, and the rating lines need the matches only one of them played.
+        # Read once the picks are known to be on the ladder: two more trips,
+        # and a match two of them played in is fetched once, not twice.
         seen = set()
-        for uid in uids:
-            for blob in store.recent_matches(limit=HISTORY_WINDOW, uid=uid):
+        for blobs in store.histories(uids, limit=HISTORY_WINDOW).values():
+            for blob in blobs:
                 if blob["id"] not in seen:
                     seen.add(blob["id"])
                     history.append(blob)
@@ -387,7 +415,7 @@ def _render_compare():
     # it; it is the same render either way, so the two can never disagree.
     bare = request.args.get("bare") == "1"
     body = page_compare.render(uids, shown, history=history, view=view,
-                               ranks=ranks, bare=bare, titles=_titles(),
+                               ranks=ranks, bare=bare, titles=_titles(data),
                                **common)
     return body, 200, (HTML if bare else CACHE)
 
@@ -397,10 +425,10 @@ def _render_shame():
     import shame
     from web.pages import shame as page_shame
 
-    common = _common()
+    common, data = _common(players=False, shame_rows=True)
     common.pop("players")
-    return page_shame.render(shame.board(limit=SHAME_SHOWN), view=_view(),
-                             **common), 200, CACHE
+    return page_shame.render(shame.board(limit=SHAME_SHOWN, rows=data.shame),
+                             view=_view(), **common), 200, CACHE
 
 
 SHAME_SHOWN = 15
@@ -408,12 +436,11 @@ SHAME_SHOWN = 15
 
 def _render_titles():
     """Every title, and who is holding it."""
-    import awards
     from web.pages import titles as page_titles
 
-    common = _common()
+    common, data = _common()
     players = common.pop("players")
-    return page_titles.render(awards.current(), players, view=_view(), **common), \
+    return page_titles.render(_table(data), players, view=_view(), **common), \
         200, CACHE
 
 
@@ -433,10 +460,10 @@ def _render_stats():
     import store
     from web.pages import stats as page_stats
 
-    common = _common()
+    common, data = _common(history=HISTORY_WINDOW)
     players = common.pop("players")
     body = page_stats.render(
-        players, history=store.recent_matches(limit=HISTORY_WINDOW),
+        players, history=data.history,
         week=store.week_key(), window=HISTORY_WINDOW, view=_view(), **common)
     return body, 200, CACHE
 
@@ -459,17 +486,19 @@ def _render_ladder():
     import page
     import store
 
-    common = _common()
+    # Recent matches are where form, streaks and per-format weekly movement come
+    # from; wallets and live pots feed the spins board. All of it arrives with
+    # the players, in the same two round trips. Read-only, and the ratings in it
+    # are the ones already stored — nothing is re-rated here.
+    common, data = _common(history=HISTORY_WINDOW, week=True, wallets=True,
+                           fixtures=True, count=True)
     players = common.pop("players")
-    # The one extra read the redesign asks for: recent matches, which is where
-    # form, streaks and per-format weekly movement come from. Read-only, and the
-    # ratings in it are the ones already stored — nothing is re-rated here.
-    history = store.recent_matches(limit=HISTORY_WINDOW)
+    history = data.history
     view = _view()
     # Spins are won on fixtures rather than on a ladder, so the board they sit
     # on is switched separately from the format tabs.
     board = "spins" if request.args.get("board") == "spins" else ""
-    week_delta, week_played = store.week_movement()
+    week_delta, week_played = data.week_delta, data.week_played
     recent, filters = _filtered_matches(players, history)
     body = page.render(
         players=_for_view(players, view),
@@ -479,14 +508,14 @@ def _render_ladder():
         filters=filters,
         placement_games=_placement(view),
         view=view,
-        spins=betting.standings(players),
+        spins=betting.rank_wallets(data.wallets, players),
         start_spins=betting.START_SPINS,
-        circulating=betting.circulating(players),
+        circulating=betting.circulating(players, held=data.wallets, pools=data.pools),
         history=history,
-        match_count=store.match_count(),
+        match_count=data.match_count,
         week=store.week_key(),
         board=board,
-        titles=_titles(),
+        titles=_titles(data),
         **common,
     )
     return body, 200, CACHE
