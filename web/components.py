@@ -311,14 +311,12 @@ def player_card(uid, player, names, rank=None, movement="", form="", href="",
     place = f'<span class="pc-rank num">#{rank:02d}</span>' if rank else \
         '<span class="pc-rank pc-placing">Placing</span>'
     body = (
-        f'<div class="pc-top">{place}{streak_badge(player["streak"])}</div>'
+        f'<div class="pc-top">{place}</div>'
         f'<div class="pc-who">{avatar(uid, names, "avatar-lg")}'
         f'<span class="pc-name">{e(display_name(uid, names))}</span></div>'
         + (f'<div class="pc-titles">{worn}</div>' if worn else "")
         + f'<div class="pc-rating"><span class="num">{player["rating"]}</span>{movement}</div>'
-        f'<div class="pc-meta"><span>{record(player)}</span>'
-        f'<span>{games_line(player)}</span></div>'
-        + (f'<div class="pc-form">{form_strip(form, label=False)}</div>' if form else ""))
+        )
     find = searchable(display_name(uid, names))
     if pickable:
         return (f'<button type="button" class="pc pc-pick{" is-picked" if picked else ""}" '

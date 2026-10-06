@@ -420,20 +420,6 @@ def _render_compare():
     return body, 200, (HTML if bare else CACHE)
 
 
-def _render_shame():
-    """The wall of shame. Reads two hashes and nothing else."""
-    import shame
-    from web.pages import shame as page_shame
-
-    common, data = _common(players=False, shame_rows=True)
-    common.pop("players")
-    return page_shame.render(shame.board(limit=SHAME_SHOWN, rows=data.shame),
-                             view=_view(), **common), 200, CACHE
-
-
-SHAME_SHOWN = 15
-
-
 def _render_titles():
     """Every title, and who is holding it."""
     from web.pages import titles as page_titles
@@ -602,7 +588,6 @@ def route(subpath):
 PAGES = {"ladder": _render_ladder, "matches": _render_matches,
          "players": _render_players, "stats": _render_stats, "log": _render_log,
          "compare": _render_compare, "titles": _render_titles,
-         "shame": _render_shame,
          "releases": _render_releases}
 
 

@@ -15,14 +15,12 @@ from .. import derive, layout
 
 MAX = c.COMPARE_MAX
 
+# Rating and peak only. Every counting row — record, matches, games, win rate,
+# best run — came off the site together, because side-by-side counts are the
+# shape this was being used in.
 ROWS = (
     ("Rating", lambda p: f'<span class="num">{p["rating"]}</span>', "high"),
-    ("Record", lambda p: c.record(p), None),
-    ("Matches", lambda p: f'<span class="num">{p["matches"]}</span>', "high"),
-    ("Games won", lambda p: c.games_line(p), None),
-    ("Win rate", lambda p: _rate(p), "high"),
     ("Peak", lambda p: f'<span class="num">{p["peak"]}</span>', "high"),
-    ("Best run", lambda p: f'<span class="num">{p["best_streak"]}</span> wins', "high"),
 )
 
 

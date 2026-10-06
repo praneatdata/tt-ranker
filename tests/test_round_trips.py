@@ -96,7 +96,6 @@ PAGE_BUDGETS = {
     "/matches": 2,
     "/stats": 2,
     "/titles": 2,
-    "/shame": 1,
     # Picks are validated against the ladder before their histories are read.
     "/compare?p=U00000&p=U00001&p=U00002": 4,
 }

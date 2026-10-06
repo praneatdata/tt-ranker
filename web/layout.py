@@ -17,7 +17,6 @@ NAV_ITEMS = (
     ("Matches", "/matches", True),
     ("Players", "/players", True),
     ("Titles", "/titles", True),
-    ("Shame", "/shame", True),
     ("Stats", "/stats", True),
 )
 
