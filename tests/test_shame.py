@@ -23,12 +23,9 @@ from tests.fake_kv import FakeRedis
 A, B, C, D = "U0AAA1", "U0BBB1", "U0CCC1", "U0DDD1"
 
 
-ADMIN = "U0ADM1"
-
-
 @pytest.fixture
 def fake(monkeypatch):
-    monkeypatch.setenv("TT_ADMINS", ADMIN)
+    monkeypatch.setenv("TT_ADMINS", "")
     redis = FakeRedis()
     with redis.patched():
         yield redis
@@ -176,7 +173,7 @@ def test_a_fixture_nobody_ever_reports_shames_everyone_in_it(fake):
 
 # --- the command -----------------------------------------------------------
 
-def command(text, user=ADMIN):
+def command(text, user=A):
     return {"user_id": user, "text": text, "channel_id": "C1"}
 
 
@@ -217,30 +214,9 @@ def test_a_clean_player_is_told_so(fake):
 
 
 def test_the_wall_says_it_is_a_joke(fake):
-    """It still says so to the admin who can see it."""
+    """If it ever stops reading as one, the board goes, not the counters."""
     shame.record(B, "rejected")
     respond = MagicMock()
     bot.handle_shame(command("shame"), respond)
     out = said(respond)
     assert "not a charge sheet" in out and "ladder working" in out
-
-
-def test_the_wall_is_not_public_any_more(fake):
-    """It went up as a public board and came back down: naming people for
-    ducking a game was the raw material the channel was already needling each
-    other with, and shaming anyone for pressing *That's wrong* risks the one
-    thing keeping results honest. The counting carries on regardless."""
-    shame.record(B, "rejected")
-    respond = MagicMock()
-    bot.handle_shame(command("shame", user=A), respond)
-    out = said(respond)
-    assert "wall came down" in out
-    assert B not in out, "a non-admin should not see who is on it"
-    assert shame.for_player(B) == {"rejected": 1}, "but the counter still ran"
-
-
-def test_a_non_admin_cannot_look_up_somebody_else_either(fake):
-    shame.record(B, "ducked")
-    respond = MagicMock()
-    bot.handle_shame(command(f"shame <@{B}>", user=A), respond)
-    assert "wall came down" in said(respond)

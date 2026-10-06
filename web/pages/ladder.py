@@ -195,15 +195,16 @@ def _featured(ranked, placing, names, placement_games, delta, played, form,
     down to the first ranked player instead of showing an empty panel."""
     if ranked:
         uid, player = ranked[0]
-        # No record, no games, no streak. Per-player counts came off the site
-        # because they were being read off it and used against people; the
-        # rating is the one figure the ladder exists to publish.
-        streak = ""
-        pairs = [("Peak", f'<span class="num">{player["peak"]}</span>')]
+        streak = c.streak_badge(player["streak"], long=True)
+        pairs = [
+            ("Record", c.record(player)),
+            ("Games", c.games_line(player)),
+            ("Peak", f'<span class="num">{player["peak"]}</span>'),
+        ]
         meta = "".join(f'<div class="pair"><span class="pair-value">{value}</span>'
                        f'<span class="pair-label">{c.e(label)}</span></div>'
                        for label, value in pairs)
-        strip = ""
+        strip = c.form_strip(form.get(uid, ""))
         return (
             '<section class="wrap rise rise-1"><div class="featured">'
             + icons.net()
@@ -263,6 +264,10 @@ def _board(ranked, names, delta, played, form, moves, known=True, titles=None,
             + c.player_link(uid, names, view, classes="row-name")
             + c.titles_of(uid, titles, limit=1)
             + "</span>"
+            + f'<span class="row-meta">{c.record(player)} &middot; '
+            f'{c.games_line(player)}{c.streak_badge(player["streak"])}</span>'
+            f'<span class="row-form">'
+            f'{c.form_strip(form.get(uid, ""), label=False)}</span>'
             f'<span class="row-score"><span class="rating num">{player["rating"]}</span>'
             f'{c.movement(delta.get(uid, 0), played.get(uid, 0), compact=True) if known else ""}</span>'
             "</li>")

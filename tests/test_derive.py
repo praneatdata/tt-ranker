@@ -274,20 +274,11 @@ def test_every_figure_says_where_it_came_from():
     assert ("Highest rating", 1050, A, "players", A) in rows
 
 
-def test_the_stats_page_no_longer_tallies_anybody():
-    """Most matches, most games, most wins, best win rate, longest win streak
-    and coldest streak all came off together. Each named a person and a tally,
-    which is the shape that was being lifted off the site and used against
-    people — "Coldest streak: @someone, still running" most of all."""
-    people = {A: player(rating=1100, wins=9, games_won=20, games_lost=2,
-                        matches=9, best_streak=6),
-              B: player(rating=900, losses=9, games_won=2, games_lost=20,
-                        matches=9, streak=-6)}
-    labels = {row[0] for row in derive.numbers(people, [])}
-    for gone in ("Most matches", "Most games", "Most wins", "Best win rate",
-                 "Longest win streak", "Coldest streak"):
-        assert gone not in labels, gone
-    assert "Highest rating" in labels, "the rating figures stay"
+def test_a_win_rate_needs_enough_games_to_mean_anything():
+    thin = {A: player(rating=1100, wins=1, games_won=2, games_lost=0, matches=1)}
+    assert not [row for row in derive.numbers(thin, []) if row[0] == "Best win rate"]
+    thick = {A: player(rating=1100, wins=3, games_won=8, games_lost=2, matches=3)}
+    assert [row for row in derive.numbers(thick, []) if row[0] == "Best win rate"]
 
 
 def test_the_closest_match_ignores_a_draw():

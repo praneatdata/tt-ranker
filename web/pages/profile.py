@@ -74,18 +74,21 @@ def _compare_href(uid, view):
 
 
 def _figures(player, games, form):
-    """Rating and peak, and nothing that counts matches.
-
-    The record, the match and game totals, the win rate, the streaks and the
-    form strip all came off this page together: they were being read off it and
-    used against the people they describe. The rating is what the ladder is for
-    and it is enough to stand on.
-    """
-    pairs = [("Peak", f'<span class="num">{player["peak"]}</span>')]
+    won, lost = player["games_won"], player["games_lost"]
+    rate = round(100 * won / games) if games else None
+    pairs = [("Record", c.record(player)),
+             ("Matches", f'<span class="num">{player["matches"]}</span>'),
+             ("Games", c.games_line(player))]
+    if rate is not None:
+        pairs.append(("Win rate", f'<span class="num">{rate}%</span>'))
+    pairs.append(("Peak", f'<span class="num">{player["peak"]}</span>'))
+    if player["best_streak"] >= 2:
+        pairs.append(("Best run", f'<span class="num">{player["best_streak"]}</span> wins'))
     figures = "".join(f'<div class="pair"><span class="pair-value">{value}</span>'
                       f'<span class="pair-label">{c.e(label)}</span></div>'
                       for label, value in pairs)
-    streak = strip = ""
+    streak = c.streak_badge(player["streak"], long=True)
+    strip = (f'<div class="profile-form">{c.form_strip(form)}</div>' if form else "")
     return ('<section class="wrap rise rise-1">'
             f'<div class="profile-figures">{figures}</div>'
             + (f'<div class="profile-tags">{streak}{strip}</div>'
@@ -119,8 +122,18 @@ def _turnout(history, uid, view, now):
     if not now:
         return ""
     columns, counts, span = derive.contributions(history, uid, now, view)
-    return ""   # the graph is a count of matches per day
-
+    if not columns:
+        return ""
+    played = sum(counts.values())
+    start, end = span
+    return c.section(
+        "Turning up", c.heatmap(columns, counts, span),
+        eyebrow=f"{played} match{'es' if played != 1 else ''} on {len(counts)} "
+                f"day{'s' if len(counts) != 1 else ''}",
+        note=f"Every session on record, from {start.day} "
+             f"{c.MONTHS[start.month - 1]} {start.year} onwards — as far back as "
+             "the ladder keeps this player's matches.",
+        classes="rise-2")
 
 
 def _versus(uid, mine, names, view, versus):

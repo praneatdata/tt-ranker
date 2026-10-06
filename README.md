@@ -87,7 +87,7 @@ Everything is one slash command, `/tt`.
 | `/tt challenge @bob best of 5` | Or type it. `bo7`, `first to 3`, `5 games`, `at 6pm` |
 | `/tt accept 4` · `/tt decline 4` | Answer a challenge — the DM buttons do the same |
 | `/tt challenges` | Every challenge still waiting on an answer |
-| `/tt shame` · `/tt shame @bob` | Admins only — who throws results out, ducks or ghosts |
+| `/tt shame` · `/tt shame @bob` | The wall of shame — results thrown out, challenges ducked |
 | `/tt book` · `/tt book 6` | Fixtures — betting open, and waiting on a result · one in full |
 | `/tt wallet` | Your spins and recent moves |
 | `/tt transfer @bob 500` | Admins only — move spins between wallets |

@@ -314,16 +314,14 @@ def test_compare_stops_at_the_ceiling():
 
 def test_compare_marks_whichever_column_leads_each_row():
     people = {A: player(rating=1100, matches=5, games_won=9, games_lost=3, peak=1100),
-              B: player(rating=1000, matches=9, games_won=6, games_lost=9, peak=1200)}
+              B: player(rating=1000, matches=9, games_won=6, games_lost=9)}
     html = compare.render([A, B], people, NAMES)
     rows = re.findall(r'<tr>(.*?)</tr>', html, re.S)
     rating = next(row for row in rows if ">Rating<" in row)
     # The higher rating is the marked cell, and it is the left column here.
     assert rating.index('class="cmp-cell leads"') < rating.index("1000")
-    # Peak is the other row that survived the cut; B's is higher, so the mark
-    # moves to the right-hand column.
-    peak = next(row for row in rows if ">Peak<" in row)
-    assert peak.index("cmp-cell leads") > peak.index(">1100<")
+    played = next(row for row in rows if ">Matches<" in row)
+    assert played.index("cmp-cell leads") > played.index(">5<")   # B played more
 
 
 def test_a_row_everyone_ties_marks_nobody():
@@ -489,34 +487,25 @@ def dated(back, uid=A, other=B):
     return blob
 
 
-def test_the_profile_no_longer_draws_the_contributions_graph():
-    """It was a square per day shaded by how many matches were played on it —
-    a count, and the kind being read off the site and used against people. The
-    derive.contributions() maths is untouched; only the rendering is gone."""
+def test_the_profile_draws_a_square_for_every_day_it_knows_about():
     history = [dated(0), dated(0), dated(4), dated(11)]
     html = profile.render(A, player(matches=4, games_won=8, games_lost=4),
                           {A: player(), B: player()}, NAMES, history,
                           placement_games=1, now=now())
-    assert "Turning up" not in body(html)
-    assert 'class="heat heat-' not in html
+    assert "Turning up" in body(html)
+    # 12 days inclusive, and the two on one day are one darker square.
+    assert html.count('class="heat heat-') >= 12
+    assert "2 matches on" in html          # the day they played twice
+    assert "as far back as the ladder keeps" in html
 
 
-def test_the_profile_carries_a_rating_and_a_peak_and_no_tallies():
-    html = profile.render(A, player(matches=4, games_won=8, games_lost=4),
-                          {A: player(), B: player()}, NAMES, [dated(0)],
-                          placement_games=1, now=now())
-    # Scoped to the figures themselves: "Matches" is also a nav link, and the
-    # nav is not what came off the page.
-    figures = re.search(r'<div class="profile-figures">(.*?)</div>\s*(?:<div|</section)',
-                        html, re.S).group(1)
-    assert "Peak" in figures
-    for gone in ("Record", "Matches", "Games", "Win rate", "Best run"):
-        assert gone not in figures, gone
-    # Against the body, not the whole document: the stylesheet is inlined in
-    # the head, so every class name appears there whether it is used or not.
-    rendered = body(html)
-    assert "profile-form" not in rendered    # the W/L strip
-    assert "profile-tags" not in rendered    # and the streak chip beside it
+def test_the_graph_says_every_count_in_words_as_well_as_a_shade():
+    """Colour is the summary here, never the information."""
+    html = profile.render(A, player(matches=2, games_won=4), {A: player()},
+                          NAMES, [dated(0), dated(4)], placement_games=1, now=now())
+    # The played days and the quiet ones in between, each said in words.
+    assert "No matches on" in body(html) and "1 match on" in body(html)
+    assert 'role="img"' in body(html) and "aria-label=" in body(html)
 
 
 def test_a_player_with_no_history_gets_no_graph():
@@ -558,3 +547,69 @@ def test_a_link_keeps_the_reader_on_the_format_they_were_reading():
     people = {A: player(rating=1100, matches=4, games_won=12, games_lost=4)}
     html = page_ladder.render(people, NAMES, [], {}, {}, 1, view="doubles")
     assert f'href="/player/{A}?view=doubles"' in html
+
+
+# --- the wall of shame -----------------------------------------------------
+
+# Built by hand rather than through shame.record(), so these stay what the rest
+# of this file is: page rendering with no database anywhere near it.
+def a_wall(*rows):
+    import shame
+    return [(uid, row, shame.score(row)) for uid, row in rows]
+
+
+def test_the_shame_page_lists_the_worst_first():
+    from web.pages import shame as page
+    html = page.render(a_wall((B, {"rejected": 3}), (A, {"ducked": 1})),
+                       {A: "Ada", B: "Bo"})
+    assert html.index("Bo") < html.index("Ada")
+
+
+def test_the_shame_page_says_it_is_a_joke():
+    """Rejecting a wrong score is the ladder working. If the page ever stops
+    saying so, the column goes rather than the wording."""
+    from web.pages import shame as page
+    html = page.render(a_wall((A, {"rejected": 1})), {A: "Ada"})
+    assert "joke board" in html and "keeping the results honest" in html
+
+
+def test_an_empty_wall_says_what_is_missing_rather_than_no_data():
+    from web.pages import shame as page
+    html = page.render([], {})
+    assert "Nothing on it" in html and "no data" not in html.lower()
+
+
+def test_every_name_on_the_wall_is_a_link_to_that_player():
+    from web.pages import shame as page
+    html = page.render(a_wall((A, {"ducked": 1})), {A: "Ada"})
+    assert f'href="/player/{A}"' in html
+
+
+def test_the_shame_page_explains_what_each_column_costs():
+    """The weighted total is the thing people will query, so the key spells out
+    what each kind is worth rather than leaving it to be reverse-engineered."""
+    import shame
+    from web.pages import shame as page
+    html = page.render([], {})
+    key = html[html.index("shame-key"):]
+    for kind, name, blurb, _ in shame.KINDS:
+        assert name in key, name
+        assert blurb.split()[0] in key, blurb
+        assert f'class="w num">{shame.WEIGHTS[kind]}<' in key, kind
+
+
+def test_the_wall_is_in_the_nav():
+    from web import layout
+    assert ("Shame", "/shame", True) in layout.NAV_ITEMS
+
+
+def test_the_shame_page_makes_no_external_request():
+    from web.pages import shame as page
+    html = page.render(a_wall((A, {"ducked": 1})), {A: "Ada"})
+    assert "http://" not in html and "https://" not in html
+
+
+def test_a_name_nobody_has_set_still_renders():
+    from web.pages import shame as page
+    html = page.render(a_wall((A, {"bailed": 1})), {})
+    assert A[-4:] in html

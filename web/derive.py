@@ -403,13 +403,40 @@ def numbers(players, history, names=None):
             add("Highest ever", peak[1]["peak"], f"{who(peak[0])}, since fallen",
                 "players", peak[0])
 
-        # Most matches, most games, most wins, best win rate, longest win
-        # streak and coldest streak all came out together. Every one of them
-        # names a person and a tally, which is the exact shape that was being
-        # lifted off the site and used against people — and "Coldest streak:
-        # @someone, still running" was the worst of them. What is left is about
-        # ratings and about matches, not about how much or how often anybody
-        # plays.
+        busiest = max(rated, key=lambda i: (i[1]["matches"], games_played(i[1])))
+        add("Most matches", busiest[1]["matches"], who(busiest[0]), "players",
+            busiest[0])
+
+        most_games = max(rated, key=lambda i: games_played(i[1]))
+        add("Most games", games_played(most_games[1]), who(most_games[0]),
+            "players", most_games[0])
+
+        winners = [(uid, p) for uid, p in rated if p["wins"]]
+        if winners:
+            most_wins = max(winners, key=lambda i: i[1]["wins"])
+            add("Most wins", most_wins[1]["wins"], who(most_wins[0]), "players",
+                most_wins[0])
+            # A win rate off two games is noise, so it is gated on the same
+            # number of games the overall board asks for before it ranks anyone.
+            eligible = [(uid, p) for uid, p in rated if games_played(p) >= 6]
+            if eligible:
+                best = max(eligible, key=lambda i: i[1]["games_won"] / games_played(i[1]))
+                rate = round(100 * best[1]["games_won"] / games_played(best[1]))
+                add("Best win rate", f"{rate}%",
+                    f"{who(best[0])} · {best[1]['games_won']} of "
+                    f"{games_played(best[1])} games", "players", best[0])
+
+        streaks = [(uid, p) for uid, p in rated if p["best_streak"] >= 2]
+        if streaks:
+            longest = max(streaks, key=lambda i: i[1]["best_streak"])
+            add("Longest win streak", longest[1]["best_streak"], who(longest[0]),
+                "players", longest[0])
+
+        cold = [(uid, p) for uid, p in rated if p["streak"] <= -2]
+        if cold:
+            worst = min(cold, key=lambda i: i[1]["streak"])
+            add("Coldest streak", abs(worst[1]["streak"]),
+                f"{who(worst[0])} · still running", "players", worst[0])
 
     if history:
         gains = [(uid, delta, blob) for blob in history

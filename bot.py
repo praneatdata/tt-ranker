@@ -1583,7 +1583,7 @@ def handle_odds(command, respond, bot_id=None):
 # Gated in the handlers, so listing them to everyone else only produces a
 # padlock. `name` is the odd one: naming yourself is open to all, naming someone
 # else is not, which the line says rather than hiding the command.
-ADMIN_ONLY = frozenset({"edit", "transfer", "nudge", "shame"})
+ADMIN_ONLY = frozenset({"edit", "transfer", "nudge"})
 
 QUICK = (
     ("Play", (
@@ -1604,6 +1604,7 @@ QUICK = (
         ("me", "@bob", "one player's card"),
         ("history", "@bob today", "results, by player and by day"),
         ("titles", "", "who holds what"),
+        ("shame", "", "the wall of shame — thrown out, ducked, ghosted"),
         ("odds", "@bob", "who's favoured"),
         ("pending", "", "results still waiting on a confirmation"),
         ("who", "ChumChum", "a ladder name to a person, or back again"),
@@ -1625,7 +1626,6 @@ QUICK = (
         ("edit", "33 21-19 11-9", "correct a logged match — also `swap`, `void`"),
         ("transfer", "@bob 500", "move spins between wallets"),
         ("nudge", "", "DM everyone who hasn't set a name"),
-        ("shame", "", "who throws results out, ducks or ghosts a challenge"),
     )),
 )
 
@@ -2885,21 +2885,7 @@ def shame_text(rows, names=None, total=0):
 
 
 def handle_shame(command, respond):
-    """`/tt shame` — admins only now.
-
-    It went up as a public board and came back down: naming people for ducking
-    a game or rejecting a score turned out to be exactly the raw material the
-    channel was already using to needle each other with, and a joke that lands
-    badly is not worth the integrity risk of discouraging anyone from pressing
-    *That's wrong*. The counters keep running, because knowing who never
-    confirms anything is genuinely useful to whoever runs the ladder — it is
-    just nobody else's business.
-    """
-    if not is_admin(command["user_id"]):
-        respond(":lock: The wall came down. Counts are still kept, but they're "
-                "for admins now — naming people for ducking a game turned out "
-                "to be a worse joke than it looked.")
-        return
+    """`/tt shame` — the wall. `/tt shame @bob` for one person's record."""
     _, rest = parsing.split_subcommand(command.get("text", ""))
     mentioned = parsing.mentions_in(rest)
     if mentioned:
